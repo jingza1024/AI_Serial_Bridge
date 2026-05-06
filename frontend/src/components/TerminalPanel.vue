@@ -127,7 +127,9 @@ onMounted(() => {
     cursorBlink: true,
     scrollback: 10000,
     allowTransparency: false,
-    convertEol: true,   // 自动将 \n 转换为 \r\n 显示
+    convertEol: false,  // 由设备控制换行，避免额外转换
+    cursorStyle: 'block',
+    tabStopWidth: 4,
   })
 
   fitAddon = new FitAddon()
@@ -141,6 +143,17 @@ onMounted(() => {
   term.write('\x1b[90m等待串口连接...\x1b[0m\r\n')
 
   // 交互模式：监听按键直接透传串口
+  // 使用缓冲减少 WebSocket 往返，降低输入延迟
+  let keyBuffer = ''
+  let keyBufferTimer: ReturnType<typeof setTimeout> | null = null
+  const flushKeyBuffer = () => {
+    if (keyBuffer) {
+      serial.sendRaw(keyBuffer)
+      keyBuffer = ''
+    }
+    keyBufferTimer = null
+  }
+
   term.onData((data) => {
     if (!term) return
     if (!interactiveMode.value) return
@@ -151,8 +164,10 @@ onMounted(() => {
       term.write(data)
     }
 
-    // 透传给串口
-    serial.sendRaw(data)
+    // 缓冲按键，5ms 后批量发送，减少 WebSocket 往返
+    keyBuffer += data
+    if (keyBufferTimer) clearTimeout(keyBufferTimer)
+    keyBufferTimer = setTimeout(flushKeyBuffer, 5)
   })
 
   // 连接 WebSocket

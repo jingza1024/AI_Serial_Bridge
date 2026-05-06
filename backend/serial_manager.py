@@ -243,29 +243,33 @@ class SerialManager:
         """后台读取线程"""
         while self._running:
             try:
-                with self._lock:
-                    if self._serial is None or not self._serial.is_open:
-                        time.sleep(0.1)
-                        continue
+                if self._serial is None or not self._serial.is_open:
+                    time.sleep(0.05)
+                    continue
 
-                    available = self._serial.in_waiting
-                    if available > 0:
+                # in_waiting 是线程安全的，不需要加锁
+                available = self._serial.in_waiting
+                if available > 0:
+                    with self._lock:
+                        # 双重检查
+                        if self._serial is None or not self._serial.is_open:
+                            continue
                         data = self._serial.read(min(available, 4096))
-                        if data:
-                            try:
-                                text = data.decode("utf-8")
-                            except UnicodeDecodeError:
-                                text = data.hex()
+                    if data:
+                        try:
+                            text = data.decode("utf-8")
+                        except UnicodeDecodeError:
+                            text = data.hex()
 
-                            msg = SerialMessage(
-                                source=MessageSource.DEVICE,
-                                content=text,
-                                timestamp=time.time(),
-                                raw_bytes=data
-                            )
-                            self._notify(msg)
-                    else:
-                        time.sleep(0.01)
+                        msg = SerialMessage(
+                            source=MessageSource.DEVICE,
+                            content=text,
+                            timestamp=time.time(),
+                            raw_bytes=data
+                        )
+                        self._notify(msg)
+                else:
+                    time.sleep(0.002)  # 2ms 轮询，降低延迟
             except Exception as e:
                 if self._running:
                     self._notify(SerialMessage(
@@ -273,7 +277,7 @@ class SerialManager:
                         content=f"读取错误: {str(e)}",
                         timestamp=time.time()
                     ))
-                time.sleep(0.1)
+                time.sleep(0.05)
 
     def _notify(self, message: SerialMessage):
         """通知所有回调并保存历史"""
