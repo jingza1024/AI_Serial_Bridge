@@ -30,6 +30,21 @@ async def api_post(path: str, json_data: dict = None):
         return await client.post(f"{BASE_URL}{path}", json=json_data, timeout=10.0)
 
 
+async def _get_default_port() -> str:
+    """获取当前已打开的串口，如果只有一个则返回它"""
+    r = await api_get("/api/open-ports")
+    ports = r.json().get("ports", [])
+    if len(ports) == 1:
+        return ports[0]
+    return ""
+
+
+def _resolve_port(arguments: dict) -> str:
+    """从参数中解析 port，如果没传则尝试推断"""
+    port = arguments.get("port", "")
+    return port
+
+
 @app.list_tools()
 async def list_tools() -> list[Tool]:
     return [
@@ -69,10 +84,10 @@ async def list_tools() -> list[Tool]:
                 "properties": {
                     "port": {
                         "type": "string",
-                        "description": "要关闭的串口名称，例如 'COM3'"
+                        "description": "要关闭的串口名称，例如 'COM3'。如果只有一个串口打开，可省略。"
                     }
                 },
-                "required": ["port"]
+                "required": []
             }
         ),
         Tool(
@@ -81,6 +96,10 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "port": {
+                        "type": "string",
+                        "description": "目标串口名称，例如 'COM3'。如果只有一个串口打开，可省略。"
+                    },
                     "data": {
                         "type": "string",
                         "description": "要发送的字符串数据"
@@ -100,6 +119,10 @@ async def list_tools() -> list[Tool]:
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "port": {
+                        "type": "string",
+                        "description": "目标串口名称，例如 'COM3'。如果只有一个串口打开，可省略。"
+                    },
                     "data": {
                         "type": "string",
                         "description": "要发送的命令"
@@ -169,35 +192,56 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=f"❌ 打开串口失败: {port}")]
 
         elif name == "serial_close":
-            r = await api_post("/api/close")
+            port = _resolve_port(arguments)
+            if not port:
+                default = await _get_default_port()
+                if default:
+                    port = default
+                else:
+                    return [TextContent(type="text", text="❌ 请指定 port 参数（或确保只有一个串口打开）")]
+            r = await api_post(f"/api/close?port={port}")
             ok = r.json().get("success", False)
-            return [TextContent(type="text", text="✅ 串口已关闭" if ok else "❌ 关闭失败或串口未打开")]
+            return [TextContent(type="text", text=f"✅ 串口 {port} 已关闭" if ok else f"❌ 关闭 {port} 失败或串口未打开")]
 
         elif name == "serial_write":
+            port = _resolve_port(arguments)
+            if not port:
+                default = await _get_default_port()
+                if default:
+                    port = default
+                else:
+                    return [TextContent(type="text", text="❌ 请指定 port 参数（或确保只有一个串口打开）")]
             data = arguments["data"]
             newline = arguments.get("newline", "\r")
-            r = await api_post("/api/write", {"data": data, "newline": newline})
+            r = await api_post(f"/api/write-ai?port={port}", {"data": data, "newline": newline})
             ok = r.json().get("success", False)
             if ok:
-                return [TextContent(type="text", text=f"📤 已发送: {data}")]
+                return [TextContent(type="text", text=f"📤 [{port}] 已发送: {data}")]
             else:
-                return [TextContent(type="text", text="❌ 发送失败，串口可能未打开")]
+                return [TextContent(type="text", text=f"❌ 向 {port} 发送失败，串口可能未打开")]
 
         elif name == "serial_write_then_read":
+            port = _resolve_port(arguments)
+            if not port:
+                default = await _get_default_port()
+                if default:
+                    port = default
+                else:
+                    return [TextContent(type="text", text="❌ 请指定 port 参数（或确保只有一个串口打开）")]
             data = arguments["data"]
             wait_time = arguments.get("wait_time", 1.0)
             read_timeout = arguments.get("read_timeout", 2.0)
 
             # 先发送
-            r = await api_post("/api/write", {"data": data, "newline": "\r"})
+            r = await api_post(f"/api/write-ai?port={port}", {"data": data, "newline": "\r"})
             if not r.json().get("success", False):
-                return [TextContent(type="text", text="❌ 发送失败，串口可能未打开")]
+                return [TextContent(type="text", text=f"❌ 向 {port} 发送失败，串口可能未打开")]
 
             # 等待设备响应
             await asyncio.sleep(wait_time)
 
             # 获取历史记录中的最新设备返回
-            r = await api_get("/api/history?limit=50")
+            r = await api_get(f"/api/history?port={port}&limit=50")
             history = r.json()
 
             # 过滤出设备返回，取最近的
@@ -205,12 +249,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             if device_msgs:
                 # 取最后几条设备消息拼接
                 recent = device_msgs[-10:]
-                lines = [f"📤 发送: {data}", "📥 收到:"]
+                lines = [f"📤 [{port}] 发送: {data}", "📥 收到:"]
                 for m in recent:
                     lines.append(m["content"])
                 return [TextContent(type="text", text="\n".join(lines))]
             else:
-                return [TextContent(type="text", text=f"📤 发送: {data}\n⏱️ 等待 {wait_time}s 后未收到响应")]
+                return [TextContent(type="text", text=f"📤 [{port}] 发送: {data}\n⏱️ 等待 {wait_time}s 后未收到响应")]
 
         elif name == "serial_is_open":
             port = arguments.get("port", "")

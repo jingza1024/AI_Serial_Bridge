@@ -1,0 +1,11 @@
+{
+  "context_servers": {
+    "ai-serial-bridge": {
+      "command": {
+        "path": "python",
+        "args": ["<YOUR_PROJECT_PATH>/backend/mcp_server.py"],
+        "env": {}
+      }
+    }
+  }
+}

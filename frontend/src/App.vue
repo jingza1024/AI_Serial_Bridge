@@ -32,7 +32,7 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).substr(2, 5)
 }
 
-function createTab(port: string, baudrate: number) {
+function createTab(port: string, baudrate: number, shouldOpen: boolean = true) {
   // 防呆：检查是否已存在该 port 的标签
   const existing = tabs.value.find(t => t.port === port)
   if (existing) {
@@ -49,10 +49,12 @@ function createTab(port: string, baudrate: number) {
   tabs.value.push(tab)
   activeTabId.value = tab.id
 
-  // 自动连接串口
-  setTimeout(() => {
-    serial.openPort(port, baudrate)
-  }, 100)
+  // 用户主动创建时才发 open 命令；WebSocket 同步时不重复 open
+  if (shouldOpen) {
+    setTimeout(() => {
+      serial.openPort(port, baudrate)
+    }, 100)
+  }
 }
 
 function closeTab(tabId: string) {
@@ -97,6 +99,32 @@ function cancelNewTab() {
 watch(() => serial.ports.value.length, () => {
   // 自动刷新可用端口
 })
+
+// 关键：监听后端已打开的串口列表，自动同步标签页
+// AI 通过 MCP 打开/关闭串口后，WebSocket 会推送 open_ports 消息
+watch(() => [...serial.openPorts.value], (newPorts) => {
+  const tabPorts = new Set(tabs.value.map(t => t.port))
+
+  // 1) 后端有但 UI 没有 -> 自动创建标签（不重复发送 open 命令）
+  for (const port of newPorts) {
+    if (!tabPorts.has(port)) {
+      createTab(port, 115200, false)
+    }
+  }
+
+  // 2) UI 有但后端已关闭 -> 自动移除标签
+  const openSet = new Set(newPorts)
+  for (let i = tabs.value.length - 1; i >= 0; i--) {
+    if (!openSet.has(tabs.value[i].port)) {
+      tabs.value.splice(i, 1)
+    }
+  }
+
+  // 3) 当前激活标签被移除时，切到最后一个
+  if (activeTabId.value && !tabs.value.find(t => t.id === activeTabId.value)) {
+    activeTabId.value = tabs.value.length > 0 ? tabs.value[tabs.value.length - 1].id : ''
+  }
+}, { immediate: true })
 
 // 组件挂载时连接 WebSocket
 serial.connect()

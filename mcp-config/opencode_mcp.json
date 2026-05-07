@@ -1,0 +1,12 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "ai-serial-bridge": {
+      "type": "local",
+      "command": [
+        "python",
+        "<YOUR_PROJECT_PATH>/backend/mcp_server.py"
+      ]
+    }
+  }
+}

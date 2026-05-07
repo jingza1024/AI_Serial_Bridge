@@ -1,0 +1,3 @@
+[mcp_servers.ai-serial-bridge]
+command = "python"
+args = ["<YOUR_PROJECT_PATH>/backend/mcp_server.py"]

@@ -3,9 +3,10 @@
     "ai-serial-bridge": {
       "command": "python",
       "args": [
-        "E:/AI_Serial/backend/mcp_server.py"
+        "<YOUR_PROJECT_PATH>/backend/mcp_server.py"
       ],
-      "description": "AI Serial Bridge - 串口调试工具"
+      "disabled": false,
+      "alwaysAllow": []
     }
   }
 }
