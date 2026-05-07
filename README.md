@@ -8,7 +8,84 @@
 
 **English** | [中文](README.zh-CN.md)
 
-A bridge tool that lets AI Agents control serial ports directly, with a Web UI for real-time monitoring.
+Give AI Agents hands to control the physical world through serial ports.
+
+## What is AI Serial Bridge?
+
+AI Serial Bridge is a **Model Context Protocol (MCP) server** that bridges AI coding assistants (Claude, Cursor, Cline, Continue, Kimi Code, etc.) with physical serial port devices. It turns your AI from a text-only assistant into a hardware-aware agent that can open serial ports, send commands, read device responses, and diagnose issues in real time.
+
+Think of it as **MobaXterm with an AI brain** -- you get a familiar terminal interface for manual debugging, plus the ability to let AI autonomously interact with your hardware via natural language.
+
+## The Problem
+
+### 1. AI Cannot Touch Hardware
+Traditional AI assistants operate purely in the digital realm -- they can write code, analyze logs, and suggest fixes, but they cannot physically interact with devices. When your embedded system crashes in the field, AI can only tell you *what might be wrong*, not *go check*.
+
+### 2. Embedded Debugging is Tedious and Repetitive
+Developers spend hours on repetitive serial port tasks:
+- Manually connecting to COM ports with PuTTY / Tera Term
+- Typing the same diagnostic commands over and over
+- Copy-pasting device output into ChatGPT for analysis
+- Switching between 5 tools just to debug one issue
+
+### 3. Remote Device Maintenance is Painful
+When a device is deployed on-site and you are in the office, debugging requires:
+- VPN + remote desktop + serial-over-network tunnels
+- Phone calls with on-site personnel reading hex dumps aloud
+- Hours of back-and-forth just to run `ifconfig` or `dmesg`
+
+### 4. No Standard Way for AI to Use Serial Ports
+Every AI agent tool (Claude, Cursor, Cline...) has its own plugin system. There is no universal protocol for AI to control hardware. Each integration requires custom code.
+
+## How AI Serial Bridge Solves It
+
+| Before | After |
+|--------|-------|
+| AI suggests "check the serial logs" | AI **opens the serial port itself** and reads the logs |
+| You type `ping www.baidu.com` manually | AI sends the command and **formats the results in a table** |
+| Copy-paste hex dumps to ChatGPT | AI **analyzes device output in real time** via MCP |
+| One person, one terminal, one device | **Multiple ports, AI + human collaboration**, Web UI for everyone |
+
+### Key Design Decisions
+
+- **MCP over stdio**: Works with any MCP-compatible AI agent -- no custom plugins needed
+- **HTTP proxy architecture**: MCP Server does not own hardware directly; it proxies to a shared FastAPI backend, so Web UI and AI always see the same device state
+- **WebSocket real-time sync**: When AI opens COM3 via MCP, the Web UI tab appears instantly. When you close a tab in the browser, the AI knows the port is gone.
+- **Dual-mode terminal**: Interactive mode (direct keystroke forwarding like MobaXterm) for human control; Command mode (input bar) for scripted AI operations
+
+## Use Cases
+
+### Embedded Firmware Development
+Flash firmware to STM32 / ESP32, read boot logs, adjust register values -- all via natural language. "Flash the new build to COM3 and tell me if the sensor initializes correctly."
+
+### IoT Device Remote Diagnostics
+Field-deployed Raspberry Pi or industrial gateway loses network. AI connects via serial, runs `ip route`, `dmesg`, and `systemctl status` to identify the root cause without anyone on-site.
+
+### Industrial Automation (PLC / RTU)
+Monitor Modbus/RS-485 connected PLCs. AI reads coil states, writes holding registers, and generates status reports automatically.
+
+### Network Equipment Configuration
+Configure routers, switches, and firewalls via their console ports. AI applies configuration templates, verifies connectivity with `ping`, and rolls back on failure.
+
+### Hardware Testing & QA
+Automate hardware-in-the-loop testing. AI sends test commands, validates responses against expected patterns, and generates pass/fail reports.
+
+### Education & Prototyping
+Students learn embedded systems by talking to their Arduino or Micro:bit in natural language. No need to remember AT command syntax.
+
+## Features
+
+- **AI Direct Serial Control**: Any MCP-compatible agent can list, open, write to, read from, and close serial ports via 7 standardized tools
+- **Web UI Terminal**: xterm.js-based terminal with syntax highlighting, scrollback, and full ANSI support
+- **Interactive Mode**: Click the terminal and type directly -- Tab completion, arrow keys, Ctrl+C interrupt, just like MobaXterm
+- **Command Mode**: Bottom input bar with selectable newline modes (CR / LF / CRLF) for scripted operations
+- **Local Echo Toggle**: Useful when the device does not echo back typed characters
+- **AI Operation Logs**: Option to display AI-sent commands in the terminal with `[AI]` label for transparency
+- **Multi-Tab Multi-Port**: Open COM3, COM4, and COM5 simultaneously -- each with an independent terminal session
+- **Auto-Sync Between AI and Web UI**: AI opens a port -> tab appears in browser. You close a tab -> AI sees the port is gone
+- **Communication History**: Full RX/TX logs per port with source attribution (User / AI / Device / System)
+- **Anti-Fool Protection**: Prevents opening the same port twice; closing a tab automatically releases the serial resource
+- **Service Manager**: One-command start/stop/restart for the entire stack (backend + frontend)
 
 ## Screenshots
 
@@ -17,15 +94,6 @@ A bridge tool that lets AI Agents control serial ports directly, with a Web UI f
 
 **AI Agent** - Diagnosing network via serial port (ping + route)  
 ![AI Network Diagnosis](assets/screenshots/ai-network-diagnosis.png)
-
-## Features
-
-- **AI Direct Serial Control**: AI Agents (Claude, Cursor, Cline, Continue, Kimi Code, etc.) can directly call serial port tools via the Model Context Protocol (MCP)
-- **Web UI Terminal**: xterm.js-based terminal interface that displays AI-device interactions in real time
-- **Interactive Mode**: Click the terminal and type directly, just like MobaXterm. Supports Tab completion, arrow keys, Ctrl+C, and more
-- **User Intervention**: Manually send commands or interrupt AI operations via the Web UI at any time
-- **Communication History**: Complete RX/TX logs with filtering support
-- **Multi-Tab**: Open multiple serial ports simultaneously, each with an independent terminal session
 
 ## Architecture
 
@@ -423,6 +491,7 @@ Reference: https://zed.dev/docs/ai/mcp
 4. **Command Mode**: Type commands in the bottom input bar, with selectable newline mode (CR / LF / CRLF)
 5. Observe the device response data in the terminal
 6. Click **x** on a tab to close the port and release resources
+7. Toggle **EN** button in the header to switch the entire UI between English and Chinese
 
 ### AI Agent Operation
 
@@ -465,6 +534,7 @@ AI_Serial/
 │   ├── main.py             # FastAPI + WebSocket service
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP proxy)
 │   ├── serial_manager.py   # Multi-port serial manager
+│   ├── locales.py          # Backend i18n (zh/en)
 │   └── requirements.txt
 ├── frontend/
 │   └── src/
@@ -472,7 +542,11 @@ AI_Serial/
 │       ├── components/
 │       │   └── TerminalPanel.vue
 │       ├── composables/
-│       │   └── useSerial.ts
+│       │   ├── useSerial.ts
+│       │   └── useLocale.ts
+│       ├── locales/
+│       │   ├── zh.ts
+│       │   └── en.ts
 │       └── styles/
 │           └── main.css
 ├── mcp-config/             # MCP config examples for each agent tool

@@ -186,7 +186,7 @@ def start():
     # 启动前端（stdout/stderr继承终端，stdin关闭）
     print("[START] 正在启动前端服务...")
     frontend_proc = subprocess.Popen(
-        ["npx.cmd", "vite", "--host"],
+        ["npm.cmd", "run", "dev"],
         cwd=str(FRONTEND_DIR),
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
         stdin=subprocess.DEVNULL,

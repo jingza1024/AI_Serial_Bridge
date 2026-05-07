@@ -1,6 +1,8 @@
 """Backend i18n support"""
 
-_current_lang: str = "zh"
+import contextvars
+
+_lang_ctx: contextvars.ContextVar[str] = contextvars.ContextVar("_lang", default="zh")
 
 MESSAGES: dict[str, dict[str, str]] = {
     "zh": {
@@ -27,15 +29,15 @@ MESSAGES: dict[str, dict[str, str]] = {
 
 
 def set_lang(lang: str) -> None:
-    global _current_lang
     if lang in MESSAGES:
-        _current_lang = lang
+        _lang_ctx.set(lang)
 
 
 def get_lang() -> str:
-    return _current_lang
+    return _lang_ctx.get()
 
 
 def t(key: str, **kwargs) -> str:
-    template = MESSAGES.get(_current_lang, MESSAGES["zh"]).get(key, key)
+    lang = _lang_ctx.get()
+    template = MESSAGES.get(lang, MESSAGES["zh"]).get(key, key)
     return template.format(**kwargs)

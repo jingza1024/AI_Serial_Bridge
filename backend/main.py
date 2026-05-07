@@ -6,6 +6,7 @@ AI Serial Bridge - FastAPI Backend
 
 import asyncio
 import json
+import os
 import time
 from contextlib import asynccontextmanager
 from typing import List, Optional
@@ -116,22 +117,31 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Serial Bridge", lifespan=lifespan)
 
-# CORS
+# CORS - 限制为本地开发环境，生产环境应配置具体域名
+_origins_env = os.environ.get("CORS_ORIGINS", "")
+if _origins_env:
+    _allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+else:
+    _allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 
+class LangRequest(BaseModel):
+    lang: str
+
+
 @app.post("/api/lang")
-async def set_language(req: dict):
+async def set_language(req: LangRequest):
     """设置后端语言"""
-    lang = req.get("lang", "zh")
-    set_lang(lang)
-    return {"lang": lang}
+    set_lang(req.lang)
+    return {"lang": req.lang}
 
 
 @app.get("/api/lang")
@@ -273,4 +283,5 @@ async def websocket_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    _host = os.environ.get("HOST", "127.0.0.1")
+    uvicorn.run(app, host=_host, port=8000)

@@ -8,7 +8,84 @@
 
 [English](README.md) | **中文**
 
-让 AI Agent 直接使用串口的桥接工具，带 Web UI 实时监控。
+让 AI Agent 拥有双手，直接控制物理世界中的串口设备。
+
+## 什么是 AI Serial Bridge？
+
+AI Serial Bridge 是一个基于 **Model Context Protocol (MCP)** 的桥接服务器，它将 AI 编程助手（Claude、Cursor、Cline、Continue、Kimi Code 等）与物理串口设备连接起来。它让你的 AI 从一个纯文本助手变成一个能够感知硬件的智能体——可以打开串口、发送命令、读取设备返回、实时诊断问题。
+
+你可以把它理解为 **带 AI 大脑的 MobaXterm**——既保留了熟悉的终端界面供手动调试，又能让 AI 通过自然语言自主与硬件交互。
+
+## 解决了什么问题？
+
+### 1. AI 无法触碰物理硬件
+传统的 AI 助手只能在数字世界运作——它们可以写代码、分析日志、给出修复建议，但无法与物理设备直接交互。当你的嵌入式系统在野外崩溃时，AI 只能告诉你*可能哪里出了问题*，却无法*亲自去检查*。
+
+### 2. 嵌入式调试繁琐且重复
+开发者每天花费大量时间在重复的串口操作上：
+- 用 PuTTY / Tera Term 手动连接 COM 口
+- 一遍又一遍地输入相同的诊断命令
+- 把设备输出复制粘贴到 ChatGPT 里分析
+- 为了调试一个问题要在 5 个工具之间来回切换
+
+### 3. 远程设备维护困难重重
+当设备部署在现场、而你在办公室时，调试意味着：
+- VPN + 远程桌面 + 串口透传隧道的层层套娃
+- 电话指挥现场人员逐字念十六进制转储
+- 为了跑一个 `ifconfig` 或 `dmesg` 来回折腾数小时
+
+### 4. 没有 AI 控制串口的标准方式
+每个 AI 工具（Claude、Cursor、Cline...）都有自己的插件体系。没有通用协议让 AI 控制硬件，每次集成都要写定制代码。
+
+## AI Serial Bridge 如何解决？
+
+| 之前 | 之后 |
+|------|------|
+| AI 建议你"查看一下串口日志" | AI **自己打开串口**读取日志 |
+| 你手动输入 `ping www.baidu.com` | AI 发送命令并**把结果整理成表格** |
+| 复制粘贴十六进制转储到 ChatGPT | AI 通过 MCP **实时分析设备输出** |
+| 一个人、一个终端、一台设备 | **多端口并行、AI + 人类协作**、Web UI 全员可见 |
+
+### 核心设计决策
+
+- **MCP stdio 传输**：兼容任何支持 MCP 的 AI 代理，无需定制插件
+- **HTTP 代理架构**：MCP Server 不直接持有硬件，而是代理到共享的 FastAPI 后端，Web UI 和 AI 始终看到同一设备状态
+- **WebSocket 实时同步**：AI 通过 MCP 打开 COM3，浏览器标签页立即出现；你在浏览器关闭标签，AI 立刻知道端口已释放
+- **双模式终端**：交互模式（按键透传，像 MobaXterm 一样）供人工控制；命令模式（底部输入栏）供 AI 脚本化操作
+
+## 应用场景
+
+### 嵌入式固件开发
+向 STM32 / ESP32 烧录固件、读取启动日志、调整寄存器值——全部用自然语言完成。"把新固件烧到 COM3，告诉我传感器是否正常初始化。"
+
+### IoT 设备远程诊断
+现场部署的树莓派或工业网关断网了。AI 通过串口连接，运行 `ip route`、`dmesg`、`systemctl status` 定位根因，无需任何人到现场。
+
+### 工业自动化（PLC / RTU）
+监控通过 Modbus/RS-485 连接的 PLC。AI 读取线圈状态、写入保持寄存器、自动生成状态报告。
+
+### 网络设备配置
+通过 Console 口配置路由器、交换机和防火墙。AI 应用配置模板、用 `ping` 验证连通性、失败时自动回滚。
+
+### 硬件测试与 QA
+自动化硬件在环测试。AI 发送测试命令、校验返回值是否符合预期、生成通过/失败报告。
+
+### 教育与原型开发
+学生用自然语言与 Arduino 或 Micro:bit 对话学习嵌入式系统，无需记忆 AT 指令语法。
+
+## 功能
+
+- **AI 直接控制串口**：任何 MCP 兼容代理都可以通过 7 个标准化工具列出、打开、写入、读取和关闭串口
+- **Web UI 终端**：基于 xterm.js，支持语法高亮、滚动回溯、完整 ANSI 转义序列
+- **交互模式**：点击终端直接输入——Tab 补全、方向键、Ctrl+C 中断，与 MobaXterm 体验一致
+- **命令模式**：底部输入栏，支持选择换行符模式（CR / LF / CRLF），适合脚本化操作
+- **本地回显开关**：设备不回显时开启，避免盲打
+- **AI 操作日志**：可选在终端中显示 AI 发送的命令，带 `[AI]` 标签，全程透明
+- **多标签多端口**：同时打开 COM3、COM4、COM5——每个端口独立终端会话
+- **AI 与 Web UI 自动同步**：AI 打开端口 → 浏览器出现标签页；你关闭标签 → AI 知道端口已释放
+- **通信历史**：每个端口的完整收发日志，标注来源（用户 / AI / 设备 / 系统）
+- **防呆保护**：防止重复打开同一端口；关闭标签自动释放串口资源
+- **服务管理器**：一键启动/停止/重启整个技术栈（后端 + 前端）
 
 ## 截图
 
@@ -17,15 +94,6 @@
 
 **AI Agent** - 通过串口进行网络诊断（ping + 路由）  
 ![AI 网络诊断](assets/screenshots/ai-network-diagnosis.png)
-
-## 功能
-
-- **AI 直接控制串口**: 通过 MCP (Model Context Protocol) 协议，Claude / Cursor / Cline / Continue / Kimi Code 等 Agent 可直接调用串口工具
-- **Web UI 终端**: 基于 xterm.js 的终端界面，实时显示 AI 与设备的交互
-- **交互模式**: 像 MobaXterm 一样直接在终端输入，支持 Tab 补全、方向键、Ctrl+C 等
-- **用户干预**: 随时在 Web UI 中手动发送命令或打断 AI 操作
-- **通信历史**: 完整记录串口收发日志，支持筛选查看
-- **多标签页**: 同时打开多个串口，每个端口独立终端会话
 
 ## 架构
 
@@ -424,6 +492,7 @@ codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.
 4. **命令模式**：在底部输入框输入命令发送，可选择换行符模式（CR / LF / CRLF）
 5. 观察终端中设备的返回数据
 6. 点击标签页上的 **x** 关闭串口并释放资源
+7. 点击 header 右上角的 **EN** 按钮可在中英文界面之间切换
 
 ### AI Agent 操作
 
@@ -466,6 +535,7 @@ AI_Serial/
 │   ├── main.py             # FastAPI + WebSocket 服务
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP 代理)
 │   ├── serial_manager.py   # 多串口管理器
+│   ├── locales.py          # 后端国际化 (zh/en)
 │   └── requirements.txt
 ├── frontend/
 │   └── src/
@@ -473,7 +543,11 @@ AI_Serial/
 │       ├── components/
 │       │   └── TerminalPanel.vue
 │       ├── composables/
-│       │   └── useSerial.ts
+│       │   ├── useSerial.ts
+│       │   └── useLocale.ts
+│       ├── locales/
+│       │   ├── zh.ts
+│       │   └── en.ts
 │       └── styles/
 │           └── main.css
 ├── mcp-config/             # 各 Agent 工具的 MCP 配置示例

@@ -141,13 +141,6 @@ onMounted(() => {
     }
   })
 
-  // 命令模式下禁用终端输入，防止用户在终端上直接输入导致显示异常
-  watch(interactiveMode, (val) => {
-    if (term) {
-      term.options.disableStdin = !val
-    }
-  })
-
   // 交互模式：监听按键直接透传串口
   let keyBuffer = ''
   let keyBufferTimer: ReturnType<typeof setTimeout> | null = null

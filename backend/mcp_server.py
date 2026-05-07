@@ -16,17 +16,24 @@ from mcp.types import Tool, TextContent
 import httpx
 import os
 
-BASE_URL = "http://localhost:8000"
-
-# 初始化后端语言（从环境变量读取，默认为中文）
-_default_lang = os.environ.get("AI_SERIAL_LANG", "zh")
-try:
-    with httpx.Client() as client:
-        client.post(f"{BASE_URL}/api/lang", json={"lang": _default_lang}, timeout=2.0)
-except Exception:
-    pass
+BASE_URL = os.environ.get("AI_SERIAL_API_URL", "http://localhost:8000")
 
 app = Server("ai-serial-bridge")
+
+# 延迟初始化语言（避免模块导入时阻塞）
+_lang_initialized = False
+
+async def _init_lang():
+    global _lang_initialized
+    if _lang_initialized:
+        return
+    _lang_initialized = True
+    lang = os.environ.get("AI_SERIAL_LANG", "zh")
+    try:
+        async with httpx.AsyncClient() as client:
+            await client.post(f"{BASE_URL}/api/lang", json={"lang": lang}, timeout=2.0)
+    except Exception:
+        pass
 
 
 async def api_get(path: str):
@@ -152,26 +159,35 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="serial_is_open",
-            description="检查串口是否已打开",
+            description="检查指定串口是否已打开",
             inputSchema={
                 "type": "object",
-                "properties": {},
-                "required": []
+                "properties": {
+                    "port": {
+                        "type": "string",
+                        "description": "要检查的串口名称，例如 'COM3'"
+                    }
+                },
+                "required": ["port"]
             }
         ),
         Tool(
             name="serial_get_history",
-            description="获取串口通信历史记录",
+            description="获取指定串口的通信历史记录",
             inputSchema={
                 "type": "object",
                 "properties": {
+                    "port": {
+                        "type": "string",
+                        "description": "要查询的串口名称，例如 'COM3'"
+                    },
                     "limit": {
                         "type": "integer",
                         "description": "返回的最大记录数",
                         "default": 100
                     }
                 },
-                "required": []
+                "required": ["port"]
             }
         )
     ]
@@ -308,6 +324,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 
 async def main():
+    await _init_lang()
     async with stdio_server() as (read_stream, write_stream):
         await app.run(
             read_stream,
