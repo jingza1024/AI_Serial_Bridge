@@ -4,6 +4,7 @@ import { Terminal } from 'xterm'
 import { FitAddon } from 'xterm-addon-fit'
 import { WebLinksAddon } from 'xterm-addon-web-links'
 import { useSerial, type SerialMessage } from '../composables/useSerial'
+import { useLocale } from '../composables/useLocale'
 import 'xterm/css/xterm.css'
 
 const props = defineProps<{
@@ -16,6 +17,7 @@ const emit = defineEmits<{
 
 const terminalRef = ref<HTMLDivElement | null>(null)
 const serial = useSerial()
+const { t } = useLocale()
 
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
@@ -37,10 +39,10 @@ function appendInteractiveMessage(msg: SerialMessage) {
     term.write(msg.content)
     if (autoScroll.value) term.scrollToBottom()
   } else if (msg.source === 'system') {
-    term.write(`\r\n\x1b[90m[系统] ${msg.content}\x1b[0m\r\n`)
+    term.write(`\r\n\x1b[90m[${t('terminal.system')}] ${msg.content}\x1b[0m\r\n`)
     if (autoScroll.value) term.scrollToBottom()
   } else if (msg.source === 'ai' && showAiLog.value) {
-    term.write(`\r\n\x1b[94m[AI] ${msg.content}\x1b[0m\r\n`)
+    term.write(`\r\n\x1b[94m[${t('terminal.ai')}] ${msg.content}\x1b[0m\r\n`)
     if (autoScroll.value) term.scrollToBottom()
   }
 }
@@ -57,11 +59,11 @@ function appendMessage(msg: SerialMessage) {
     if (msg.source === 'device') {
       line = `\x1b[38;2;134;239;172m${time}${msg.content}${reset}`
     } else if (msg.source === 'user') {
-      line = `\r\n\x1b[38;2;250;204;21m${time}[用户] ${msg.content}${reset}\r\n`
+      line = `\r\n\x1b[38;2;250;204;21m${time}[${t('terminal.user')}] ${msg.content}${reset}\r\n`
     } else if (msg.source === 'ai') {
-      line = `\r\n\x1b[38;2;96;165;250m${time}[AI] ${msg.content}${reset}\r\n`
+      line = `\r\n\x1b[38;2;96;165;250m${time}[${t('terminal.ai')}] ${msg.content}${reset}\r\n`
     } else {
-      line = `\r\n\x1b[38;2;156;163;175m${time}[系统] ${msg.content}${reset}\r\n`
+      line = `\r\n\x1b[38;2;156;163;175m${time}[${t('terminal.system')}] ${msg.content}${reset}\r\n`
     }
     term.write(line)
     if (autoScroll.value) term.scrollToBottom()
@@ -72,9 +74,9 @@ function clearTerminal() {
   if (term) {
     term.clear()
     if (interactiveMode.value) {
-      term.write('\x1b[90m--- 终端已清空 ---\x1b[0m\r\n')
+      term.write(`\x1b[90m--- ${t('terminal.cleared')} ---\x1b[0m\r\n`)
     } else {
-      term.write('\x1b[38;2;156;163;175m--- 终端已清空 ---\x1b[0m\r\n')
+      term.write(`\x1b[38;2;156;163;175m--- ${t('terminal.cleared')} ---\x1b[0m\r\n`)
     }
   }
 }
@@ -129,8 +131,8 @@ onMounted(() => {
   term.open(terminalRef.value)
   fitAddon.fit()
 
-  term.write(`\x1b[90m--- ${props.port} 终端已就绪 ---\x1b[0m\r\n`)
-  term.write('\x1b[90m等待串口连接...\x1b[0m\r\n')
+  term.write(`\x1b[90m--- ${props.port} ${t('terminal.ready')} ---\x1b[0m\r\n`)
+  term.write(`\x1b[90m${t('terminal.waiting')}\x1b[0m\r\n`)
 
   // 命令模式下禁用终端输入，防止用户在终端上直接输入导致显示异常
   watch(interactiveMode, (val) => {
@@ -224,20 +226,20 @@ watch(() => serial.messages.value[props.port]?.length, (newLen, oldLen) => {
           class="btn btn-primary"
           @click="handleOpen"
         >
-          打开串口
+          {{ t('terminal.openPort') }}
         </button>
         <button
           v-else
           class="btn btn-danger"
           @click="handleClose"
         >
-          关闭串口
+          {{ t('terminal.closePort') }}
         </button>
       </div>
 
       <div class="toolbar-group">
         <span class="status-badge" :class="{ active: serial.isSerialOpen.value[props.port] }">
-          {{ serial.isSerialOpen.value[props.port] ? `已连接 @ ${baudrate}` : '未打开' }}
+          {{ serial.isSerialOpen.value[props.port] ? `${t('terminal.connected')} @ ${baudrate}` : t('terminal.notOpen') }}
         </span>
       </div>
 
@@ -247,22 +249,22 @@ watch(() => serial.messages.value[props.port]?.length, (newLen, oldLen) => {
           :class="interactiveMode ? 'btn-primary' : 'btn-secondary'"
           @click="interactiveMode = true"
         >
-          交互模式
+          {{ t('terminal.interactiveMode') }}
         </button>
         <button
           class="btn"
           :class="!interactiveMode ? 'btn-primary' : 'btn-secondary'"
           @click="interactiveMode = false"
         >
-          命令模式
+          {{ t('terminal.commandMode') }}
         </button>
 
-        <label v-if="interactiveMode" class="checkbox" title="设备不回显时开启">
+        <label v-if="interactiveMode" class="checkbox" :title="t('terminal.localEchoTooltip')">
           <input v-model="localEcho" type="checkbox" />
-          本地回显
+          {{ t('terminal.localEcho') }}
         </label>
 
-        <button class="btn btn-secondary" @click="clearTerminal">清空</button>
+        <button class="btn btn-secondary" @click="clearTerminal">{{ t('terminal.clear') }}</button>
       </div>
     </div>
 
@@ -271,17 +273,17 @@ watch(() => serial.messages.value[props.port]?.length, (newLen, oldLen) => {
 
     <!-- 底部命令栏（仅命令模式显示） -->
     <div v-if="!interactiveMode" class="input-bar">
-      <select v-model="newlineMode" class="select" title="换行符">
+      <select v-model="newlineMode" class="select" :title="t('terminal.newline')">
         <option :value="'\r\n'">CRLF (\r\n)</option>
         <option :value="'\n'">LF (\n)</option>
         <option :value="'\r'">CR (\r)</option>
-        <option :value="''">无</option>
+        <option :value="''">None</option>
       </select>
       <input
         v-model="inputText"
         type="text"
         class="input"
-        placeholder="输入命令发送给串口... (Enter发送)"
+        :placeholder="t('terminal.inputPlaceholder')"
         :disabled="!serial.isSerialOpen.value[props.port]"
         @keydown="handleKeydown"
       />
@@ -290,19 +292,19 @@ watch(() => serial.messages.value[props.port]?.length, (newLen, oldLen) => {
         :disabled="!serial.isSerialOpen.value[props.port] || !inputText.trim()"
         @click="sendInput"
       >
-        发送
+        {{ t('terminal.send') }}
       </button>
     </div>
 
     <!-- 底部提示栏（仅交互模式显示） -->
     <div v-else class="hint-bar">
       <span class="hint">
-        交互模式：直接在终端输入，Tab 补全、方向键、Ctrl+C 等均支持
-        <template v-if="localEcho"> | 本地回显已开启</template>
+        {{ t('terminal.interactiveHint') }}
+        <template v-if="localEcho"> | {{ t('terminal.localEchoOn') }}</template>
       </span>
       <label class="checkbox">
         <input v-model="showAiLog" type="checkbox" />
-        显示AI操作
+        {{ t('terminal.showAiLog') }}
       </label>
     </div>
   </div>

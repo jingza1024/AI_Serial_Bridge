@@ -14,8 +14,17 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 import httpx
+import os
 
 BASE_URL = "http://localhost:8000"
+
+# 初始化后端语言（从环境变量读取，默认为中文）
+_default_lang = os.environ.get("AI_SERIAL_LANG", "zh")
+try:
+    with httpx.Client() as client:
+        client.post(f"{BASE_URL}/api/lang", json={"lang": _default_lang}, timeout=2.0)
+except Exception:
+    pass
 
 app = Server("ai-serial-bridge")
 

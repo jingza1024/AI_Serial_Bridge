@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from serial_manager import SerialPortManager, serial_manager, MessageSource, SerialMessage
+from locales import set_lang, get_lang
 
 
 class OpenPortRequest(BaseModel):
@@ -123,6 +124,20 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.post("/api/lang")
+async def set_language(req: dict):
+    """设置后端语言"""
+    lang = req.get("lang", "zh")
+    set_lang(lang)
+    return {"lang": lang}
+
+
+@app.get("/api/lang")
+async def get_language():
+    """获取当前后端语言"""
+    return {"lang": get_lang()}
 
 
 @app.get("/api/ports")

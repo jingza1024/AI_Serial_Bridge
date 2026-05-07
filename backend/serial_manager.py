@@ -10,6 +10,7 @@ import time
 from typing import Callable, Optional, List, Dict
 from dataclasses import dataclass
 from enum import Enum
+from locales import t
 
 
 class MessageSource(Enum):
@@ -63,7 +64,7 @@ class SerialManager:
             if self._serial is not None and self._serial.is_open:
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content=f"串口已打开，先关闭当前连接: {self._serial.port}",
+                    content=t("port_already_open_close_first", port=self._serial.port),
                     timestamp=time.time()
                 ))
                 self._close_internal()
@@ -83,14 +84,14 @@ class SerialManager:
 
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content=f"串口已打开: {port} @ {baudrate}bps",
+                    content=t("port_opened", port=port, baudrate=baudrate),
                     timestamp=time.time()
                 ))
                 return True
             except Exception as e:
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content=f"打开串口失败: {str(e)}",
+                    content=t("port_open_failed", error=str(e)),
                     timestamp=time.time()
                 ))
                 return False
@@ -112,7 +113,7 @@ class SerialManager:
                     self._serial.close()
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content=f"串口已关闭: {self._serial.port}",
+                    content=t("port_closed", port=self._serial.port),
                     timestamp=time.time()
                 ))
                 self._serial = None
@@ -120,7 +121,7 @@ class SerialManager:
             except Exception as e:
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content=f"关闭串口失败: {str(e)}",
+                    content=t("port_close_failed", error=str(e)),
                     timestamp=time.time()
                 ))
                 return False
@@ -136,7 +137,7 @@ class SerialManager:
             if self._serial is None or not self._serial.is_open:
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content="错误: 串口未打开",
+                    content=t("port_not_open"),
                     timestamp=time.time()
                 ))
                 return False
@@ -161,7 +162,7 @@ class SerialManager:
             except Exception as e:
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content=f"发送失败: {str(e)}",
+                    content=t("send_failed", error=str(e)),
                     timestamp=time.time()
                 ))
                 return False
@@ -172,7 +173,7 @@ class SerialManager:
             if self._serial is None or not self._serial.is_open:
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content="错误: 串口未打开",
+                    content=t("port_not_open"),
                     timestamp=time.time()
                 ))
                 return False
@@ -201,7 +202,7 @@ class SerialManager:
             except Exception as e:
                 self._notify(SerialMessage(
                     source=MessageSource.SYSTEM,
-                    content=f"发送失败: {str(e)}",
+                    content=t("send_failed", error=str(e)),
                     timestamp=time.time()
                 ))
                 return False
@@ -279,7 +280,7 @@ class SerialManager:
                 if self._running:
                     self._notify(SerialMessage(
                         source=MessageSource.SYSTEM,
-                        content=f"读取错误: {str(e)}",
+                        content=t("read_error", error=str(e)),
                         timestamp=time.time()
                     ))
                 time.sleep(0.05)

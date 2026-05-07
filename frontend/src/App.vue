@@ -2,6 +2,7 @@
 import { ref, computed, watch } from 'vue'
 import TerminalPanel from './components/TerminalPanel.vue'
 import { useSerial } from './composables/useSerial'
+import { useLocale } from './composables/useLocale'
 
 interface Tab {
   id: string
@@ -11,6 +12,7 @@ interface Tab {
 }
 
 const serial = useSerial()
+const { t, locale } = useLocale()
 const tabs = ref<Tab[]>([])
 const activeTabId = ref<string>('')
 const showNewTabModal = ref(false)
@@ -143,8 +145,11 @@ serial.connect()
       </div>
       <div class="header-right">
         <span class="ws-status" :class="{ active: serial.isConnected.value }">
-          WS: {{ serial.isConnected.value ? '已连接' : '未连接' }}
+          WS: {{ serial.isConnected.value ? t('app.wsConnected') : t('app.wsDisconnected') }}
         </span>
+        <button class="lang-btn" @click="locale = locale === 'zh' ? 'en' : 'zh'">
+          {{ locale === 'zh' ? t('app.en') : t('app.zh') }}
+        </button>
       </div>
     </header>
 
@@ -161,7 +166,7 @@ serial.connect()
         <span
           class="tab-close"
           @click.stop="closeTab(tab.id)"
-          title="关闭标签并断开串口"
+          :title="t('app.closeTabTooltip')"
         >
           x
         </span>
@@ -170,7 +175,7 @@ serial.connect()
       <button
         class="tab-add"
         @click="openNewTabModal"
-        title="新建标签"
+        :title="t('app.newTab')"
         :disabled="availablePorts.length === 0 && serial.ports.value.length === 0"
       >
         +
@@ -198,8 +203,8 @@ serial.connect()
             <path d="M5 12h14"/>
             <path d="M12 5l7 7-7 7"/>
           </svg>
-          <p>暂无打开的串口</p>
-          <button class="btn btn-primary" @click="openNewTabModal">+ 新建标签</button>
+          <p>{{ t('app.noPortOpen') }}</p>
+          <button class="btn btn-primary" @click="openNewTabModal">+ {{ t('app.newTab') }}</button>
         </div>
       </div>
     </main>
@@ -208,14 +213,14 @@ serial.connect()
     <div v-if="showNewTabModal" class="modal-overlay" @click.self="cancelNewTab">
       <div class="modal">
         <div class="modal-header">
-          <h3>新建串口标签</h3>
+          <h3>{{ t('app.newTabTitle') }}</h3>
           <button class="modal-close" @click="cancelNewTab">&times;</button>
         </div>
         <div class="modal-body">
           <div class="form-group">
-            <label>串口</label>
+            <label>{{ t('app.port') }}</label>
             <select v-model="selectedPort" class="select">
-              <option value="" disabled>选择串口</option>
+              <option value="" disabled>{{ t('app.selectPort') }}</option>
               <option
                 v-for="p in availablePorts"
                 :key="p.device"
@@ -225,15 +230,15 @@ serial.connect()
               </option>
             </select>
             <p v-if="availablePorts.length === 0 && serial.ports.value.length > 0" class="form-hint warn">
-              所有可用串口已打开，请先关闭某个标签
+              {{ t('app.allPortsOpen') }}
             </p>
             <p v-else-if="serial.ports.value.length === 0" class="form-hint">
-              未检测到可用串口，请检查设备连接
+              {{ t('app.noPortDetected') }}
             </p>
           </div>
 
           <div class="form-group">
-            <label>波特率</label>
+            <label>{{ t('app.baudrate') }}</label>
             <select v-model="selectedBaudrate" class="select">
               <option :value="9600">9600</option>
               <option :value="19200">19200</option>
@@ -247,13 +252,13 @@ serial.connect()
           </div>
         </div>
         <div class="modal-footer">
-          <button class="btn btn-secondary" @click="cancelNewTab">取消</button>
+          <button class="btn btn-secondary" @click="cancelNewTab">{{ t('app.cancel') }}</button>
           <button
             class="btn btn-primary"
             :disabled="!selectedPort"
             @click="confirmNewTab"
           >
-            打开串口
+            {{ t('app.openPort') }}
           </button>
         </div>
       </div>
@@ -312,6 +317,20 @@ serial.connect()
   background-color: #23863633;
   color: #3fb950;
   border-color: #238636;
+}
+
+.lang-btn {
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  background-color: #21262d;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  cursor: pointer;
+}
+
+.lang-btn:hover {
+  background-color: #30363d;
 }
 
 /* 标签栏 */
