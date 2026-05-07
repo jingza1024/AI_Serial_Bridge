@@ -1,12 +1,33 @@
 # AI Serial Bridge
 
-�?AI Agent 直接使用串口的桥接工具，�?Web UI 实时监控�?
-## 功能
+[![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
+[![Vue.js](https://img.shields.io/badge/Vue-3-green.svg)](https://vuejs.org)
+[![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg)](https://fastapi.tiangolo.com)
+[![MCP](https://img.shields.io/badge/MCP-1.0+-purple.svg)](https://modelcontextprotocol.io)
+[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-- **AI 直接控制串口**: 通过 MCP (Model Context Protocol) 协议，Claude / Cursor / Cline / Continue / Kimi Code �?Agent 可直接调用串口工�?- **Web UI 终端**: 基于 xterm.js 的终端界面，实时显示 AI 与设备的交互
-- **交互模式**: �?MobaXterm 一样直接在终端输入，支�?Tab 补全、方向键、Ctrl+C �?- **用户干预**: 随时�?Web UI 中手动发送命令或打断 AI 操作
-- **通信历史**: 完整记录串口收发日志，支持筛选查�?- **多标签页**: 同时打开多个串口，每个端口独立终端会�?
-## 架构
+**English** | [中文](README.zh-CN.md)
+
+A bridge tool that lets AI Agents control serial ports directly, with a Web UI for real-time monitoring.
+
+## Screenshots
+
+**Web UI** - Real-time serial terminal with interactive & command modes  
+![Web UI Terminal](assets/screenshots/webui-terminal.png)
+
+**AI Agent** - Diagnosing network via serial port (ping + route)  
+![AI Network Diagnosis](assets/screenshots/ai-network-diagnosis.png)
+
+## Features
+
+- **AI Direct Serial Control**: AI Agents (Claude, Cursor, Cline, Continue, Kimi Code, etc.) can directly call serial port tools via the Model Context Protocol (MCP)
+- **Web UI Terminal**: xterm.js-based terminal interface that displays AI-device interactions in real time
+- **Interactive Mode**: Click the terminal and type directly, just like MobaXterm. Supports Tab completion, arrow keys, Ctrl+C, and more
+- **User Intervention**: Manually send commands or interrupt AI operations via the Web UI at any time
+- **Communication History**: Complete RX/TX logs with filtering support
+- **Multi-Tab**: Open multiple serial ports simultaneously, each with an independent terminal session
+
+## Architecture
 
 ```
 AI Agent --MCP/stdio--> mcp_server.py --HTTP--> main.py --USB--> Serial Device
@@ -14,66 +35,75 @@ AI Agent --MCP/stdio--> mcp_server.py --HTTP--> main.py --USB--> Serial Device
 Web UI --WebSocket--> main.py(FastAPI) -------+
 ```
 
-MCP Server 不直接持有串口硬件，而是通过 HTTP 代理�?`main.py`，与 Web UI 共享同一个串口状态。因此必须先启动后端服务，MCP 才能正常工作�?
-## 快速开始（推荐�?
-使用 `manager.py` 一键管理所有服务：
+The MCP Server does not own serial hardware directly. Instead, it proxies to `main.py` via HTTP, sharing the same serial port state with the Web UI. Therefore, the backend service must be running before MCP can work.
+
+## Quick Start (Recommended)
+
+Use `manager.py` to manage all services with one command:
 
 ```bash
-# 进入项目目录
 cd AI_Serial
 
-# 启动所有服务（后端 + 前端�?python manager.py start
+# Start all services (backend + frontend)
+python manager.py start
 
-# 查看状�?python manager.py status
+# Check status
+python manager.py status
 
-# 停止所有服�?python manager.py stop
+# Stop all services
+python manager.py stop
 
-# 重启所有服�?python manager.py restart
+# Restart all services
+python manager.py restart
 ```
 
-`start` 会占用当前终端（类似 `docker-compose up`），后台和前端的日志会交错输出。按 **Ctrl+C** 一次即可优雅停止所有服务�?
-启动后访问：http://localhost:5173
+`start` occupies the current terminal (similar to `docker-compose up`), with backend and frontend logs interleaved. Press **Ctrl+C** once to gracefully stop all services.
 
-## 手动启动
+After starting, visit: http://localhost:5173
 
-### 1. 安装依赖
+## Manual Start
+
+### 1. Install Dependencies
 
 ```bash
-# Python 后端
+# Python backend
 cd backend
 pip install -r requirements.txt
 
-# Node 前端
+# Node frontend
 cd ../frontend
 npm install
 ```
 
-### 2. 启动后端
+### 2. Start Backend
 
 ```bash
 cd backend
 python main.py
 ```
 
-后端运行�?http://localhost:8000
+Backend runs at http://localhost:8000
 
-### 3. 启动前端
+### 3. Start Frontend
 
 ```bash
 cd frontend
 npm run dev
 ```
 
-访问: http://localhost:5173
+Visit: http://localhost:5173
 
-## MCP 配置
+## MCP Configuration
 
-> **前提条件**: 确保后端服务已启�?(`python main.py` �?`python manager.py start`)，因�?MCP Server 通过 HTTP 代理�?`localhost:8000`�?
-以下配置中所有路径均为示例，请将 `<YOUR_PROJECT_PATH>` 替换为你的实际项目绝对路径�?
+> **Prerequisite**: Ensure the backend service is running (`python main.py` or `python manager.py start`), because the MCP Server proxies to `localhost:8000` via HTTP.
+
+All paths below are examples. Replace `<YOUR_PROJECT_PATH>` with your actual installation directory.
+
 ### Kimi Code CLI
 
-> **注意**: Kimi Code **VS Code 扩展**不支�?MCP，只�?**CLI 版本**支持�?
-配置文件: `~/.kimi/mcp.json` (Windows 路径: `C:\Users\<用户�?\.kimi\mcp.json`)
+> **Note**: The Kimi Code **VS Code Extension** does **not** support MCP. Only the **CLI version** does.
+
+Config file: `~/.kimi/mcp.json` (Windows: `C:\Users\<username>\.kimi\mcp.json`)
 
 ```json
 {
@@ -88,19 +118,19 @@ npm run dev
 }
 ```
 
-使用 CLI 启动时带上配�?
+Launch CLI with the config:
 
 ```bash
-kimi --mcp-config-file C:\Users\<用户�?\.kimi\mcp.json
+kimi --mcp-config-file C:\Users\<username>\.kimi\mcp.json
 ```
 
-参�? https://docs.moonshot.cn/kimi-cli/mcp
+Reference: https://docs.moonshot.cn/kimi-cli/mcp
 
 ---
 
 ### Claude Desktop
 
-配置文件路径:
+Config file path:
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
 - **Linux**: `~/.config/Claude/claude_desktop_config.json`
@@ -118,20 +148,21 @@ kimi --mcp-config-file C:\Users\<用户�?\.kimi\mcp.json
 }
 ```
 
-保存�?*完全退出并重启** Claude Desktop�?
-参�? https://modelcontextprotocol.io/quickstart/user
+**Fully quit and restart** Claude Desktop after saving.
+
+Reference: https://modelcontextprotocol.io/quickstart/user
 
 ---
 
 ### Claude Code (CLI)
 
-推荐通过 CLI 命令添加:
+Add via CLI (recommended):
 
 ```bash
 claude mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
 ```
 
-或手动编辑配置文�?`~/.claude/settings.json`:
+Or manually edit `~/.claude/settings.json`:
 
 ```json
 {
@@ -146,17 +177,18 @@ claude mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server
 }
 ```
 
-参�? https://github.com/anthropics/claude-code/blob/main/MCP.md
+Reference: https://github.com/anthropics/claude-code/blob/main/MCP.md
 
 ---
 
 ### Cursor
 
-配置文件路径:
-- **全局**: `~/.cursor/mcp.json`
-- **项目�?*: `.cursor/mcp.json` (项目根目�?
+Config file path:
+- **Global**: `~/.cursor/mcp.json`
+- **Project-level**: `.cursor/mcp.json` (project root)
 
-> Cursor 要求显式声明 `"type": "stdio"`�?
+> Cursor requires an explicit `"type": "stdio"`.
+
 ```json
 {
   "mcpServers": {
@@ -171,19 +203,22 @@ claude mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server
 }
 ```
 
-保存后，�?Cursor 设置 > MCP 中确认服务器已加载�?
-参�? https://cursor.com/docs/mcp
+After saving, confirm the server is loaded in Cursor Settings > MCP.
+
+Reference: https://cursor.com/docs/mcp
 
 ---
 
-### VS Code 内置 Copilot Chat (Agent 模式)
+### VS Code Built-in Copilot Chat (Agent Mode)
 
-VS Code 原生支持 MCP，适用�?GitHub Copilot Chat Agent 模式�?
-配置文件路径:
-- **工作区级**: `.vscode/mcp.json` (推荐，可纳入版本控制)
-- **用户�?*: 运行命令 **MCP: Open User Configuration**
+VS Code natively supports MCP for GitHub Copilot Chat Agent mode.
 
-> VS Code 使用 `"servers"` 作为顶层键（�?`"mcpServers"`），且必须包�?`"type"` 字段�?
+Config file path:
+- **Workspace**: `.vscode/mcp.json` (recommended, can be version-controlled)
+- **User**: Run command **MCP: Open User Configuration**
+
+> VS Code uses `"servers"` as the top-level key (not `"mcpServers"`), and requires a `"type"` field.
+
 ```json
 {
   "servers": {
@@ -198,19 +233,21 @@ VS Code 原生支持 MCP，适用�?GitHub Copilot Chat Agent 模式�?
 }
 ```
 
-配置�?VS Code 会提示信任该服务器，确认后即可使用�?
-参�? https://code.visualstudio.com/docs/copilot/customization/mcp-servers
+After configuration, VS Code will prompt you to trust the server. Confirm to use it.
+
+Reference: https://code.visualstudio.com/docs/copilot/customization/mcp-servers
 
 ---
 
 ### Cline (VS Code Extension)
 
-配置文件路径:
+Config file path:
 - **Windows**: `%APPDATA%\Code\User\globalStorage\saoudrizwan.claude-dev\settings\cline_mcp_settings.json`
 - **macOS**: `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
 - **Linux**: `~/.config/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json`
 
-> 如果�?Cursor / Windsurf 中运�?Cline，将路径中的 `Code` 替换为对应编辑器名称�?
+> If running Cline inside Cursor / Windsurf, replace `Code` with the corresponding editor name in the path.
+
 ```json
 {
   "mcpServers": {
@@ -226,16 +263,17 @@ VS Code 原生支持 MCP，适用�?GitHub Copilot Chat Agent 模式�?
 }
 ```
 
-也可�?Cline 面板中点�?**MCP Servers** > **Configure MCP Servers** 通过 UI 添加�?
-参�? https://docs.cline.bot/mcp/adding-and-configuring-servers
+You can also add it via the Cline panel: **MCP Servers** > **Configure MCP Servers**.
+
+Reference: https://docs.cline.bot/mcp/adding-and-configuring-servers
 
 ---
 
 ### Continue.dev (VS Code / JetBrains)
 
-Continue 新版推荐使用 **YAML 配置**:
+Continue recommends the new **YAML configuration**:
 
-在项目根目录创建 `.continue/mcpServers/ai-serial-bridge.yaml`:
+Create `.continue/mcpServers/ai-serial-bridge.yaml` in your project root:
 
 ```yaml
 name: ai-serial-bridge
@@ -249,8 +287,9 @@ mcpServers:
       - <YOUR_PROJECT_PATH>/backend/mcp_server.py
 ```
 
-或放入用户级目录 `~/.continue/mcpServers/` 实现全局可用�?
-旧版 JSON 配置（`~/.continue/config.json`）仍兼容:
+Or place it in `~/.continue/mcpServers/` for global availability.
+
+Legacy JSON config (`~/.continue/config.json`) is still supported:
 
 ```json
 {
@@ -270,14 +309,15 @@ mcpServers:
 }
 ```
 
-> **注意**: MCP 工具仅在 Continue �?**Agent 模式** 下可用，普�?Chat 模式不会调用工具�?
-参�? https://docs.continue.dev/customize/deep-dives/mcp
+> **Note**: MCP tools only work in Continue's **Agent mode**. Regular Chat mode will not invoke tools.
+
+Reference: https://docs.continue.dev/customize/deep-dives/mcp
 
 ---
 
 ### Windsurf (Codeium)
 
-配置文件: `~/.codeium/windsurf/mcp_config.json`
+Config file: `~/.codeium/windsurf/mcp_config.json`
 
 ```json
 {
@@ -292,17 +332,18 @@ mcpServers:
 }
 ```
 
-参�? https://docs.windsurf.com/windsurf/cascade/mcp
+Reference: https://docs.windsurf.com/windsurf/cascade/mcp
 
 ---
 
 ### OpenCode
 
-配置文件路径:
-- **全局**: `~/.config/opencode/opencode.json`
-- **项目�?*: `opencode.json` (项目根目录，优先级最�?
+Config file path:
+- **Global**: `~/.config/opencode/opencode.json`
+- **Project-level**: `opencode.json` (project root, highest priority)
 
-> OpenCode 的格式与其他工具不同：`"mcp"` 为顶层键，`"type": "local"` 为必需项，`"command"` �?*数组**�?
+> OpenCode uses a different format: `"mcp"` is the top-level key, `"type": "local"` is required, and `"command"` is an **array**.
+
 ```json
 {
   "$schema": "https://opencode.ai/config.json",
@@ -318,38 +359,40 @@ mcpServers:
 }
 ```
 
-参�? https://opencode.ai/docs/mcp-servers/
+Reference: https://opencode.ai/docs/mcp-servers/
 
 ---
 
 ### Codex CLI (OpenAI)
 
-配置文件: `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`)
+Config file: `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`)
 
-> Codex 使用 TOML 格式，Windows 上建议通过 WSL2 运行�?
+> Codex uses TOML format. On Windows, WSL2 is recommended.
+
 ```toml
 [mcp_servers.ai-serial-bridge]
 command = "python"
 args = ["<YOUR_PROJECT_PATH>/backend/mcp_server.py"]
 ```
 
-或通过 CLI 添加:
+Or add via CLI:
 
 ```bash
 codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
 ```
 
-参�? https://developers.openai.com/codex/mcp
+Reference: https://developers.openai.com/codex/mcp
 
 ---
 
 ### Zed Editor
 
-配置文件:
+Config file:
 - **macOS / Linux**: `~/.config/zed/settings.json`
 - **Windows**: `%APPDATA%\Zed\settings.json`
 
-> Zed 使用 `"context_servers"` 键（�?`"mcpServers"`），命令结构为嵌套对象�?
+> Zed uses `"context_servers"` (not `"mcpServers"`), with a nested command object.
+
 ```json
 {
   "context_servers": {
@@ -364,81 +407,99 @@ codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.
 }
 ```
 
-参�? https://zed.dev/docs/ai/mcp
+Reference: https://zed.dev/docs/ai/mcp
 
-## 使用指南
+## Usage Guide
 
-### Web UI 操作
+### Web UI Operation
 
-1. 打开浏览器访�?http://localhost:5173
-2. 点击 **+** 选择串口设备和波特率，点击「打开串口�?3. **交互模式**（默认）：直接在黑色终端区域点击并输入，�?MobaXterm 一样使�?   - Enter 发送命�?   - Tab 自动补全
-   - 方向键浏览历�?   - Ctrl+C 中断当前程序
-4. **命令模式**：在底部输入框输入命令发送，可选择换行符模式（CR / LF / CRLF�?5. 观察终端中设备的返回数据
-6. 点击标签页上�?**x** 关闭串口并释放资�?
-### AI Agent 操作
+1. Open your browser and visit http://localhost:5173
+2. Click **+** to select a serial port and baud rate, then click "Open Port"
+3. **Interactive Mode** (default): Click the black terminal area and type directly, just like MobaXterm
+   - Enter to send commands
+   - Tab for auto-completion
+   - Arrow keys for history
+   - Ctrl+C to interrupt the current program
+4. **Command Mode**: Type commands in the bottom input bar, with selectable newline mode (CR / LF / CRLF)
+5. Observe the device response data in the terminal
+6. Click **x** on a tab to close the port and release resources
 
-配置�?MCP 后，AI 会自动获得以下工具：
+### AI Agent Operation
 
-| 工具 | 说明 | 参数 |
-|------|------|------|
-| `serial_list_ports` | 列出可用串口 | �?|
-| `serial_open` | 打开指定串口 | `port`(必填), `baudrate` |
-| `serial_close` | 关闭指定串口 | `port`(单端口时可省�? |
-| `serial_write` | 发送数据到串口 | `data`(必填), `port`(单端口时可省�?, `newline` |
-| `serial_write_then_read` | 发送并等待响应 | `data`(必填), `port`(单端口时可省�?, `wait_time` |
-| `serial_get_history` | 获取通信历史 | `port`(必填), `limit` |
-| `serial_is_open` | 检查串口是否已打开 | `port`(必填) |
+Once MCP is configured, the AI automatically gains the following tools:
 
-> **注意**: 所有涉及操作的工具（write/close/write_then_read）都需要指�?`port`。如果只打开了一个串口，工具会自动推断，无需手动指定。如果同时打开了多个串口，必须明确传入 `port` 参数�?
-**示例对话:**
+| Tool | Description | Parameters |
+|------|-------------|------------|
+| `serial_list_ports` | List available serial ports | None |
+| `serial_open` | Open a specified serial port | `port` (required), `baudrate` |
+| `serial_close` | Close a serial port | `port` (optional if single port) |
+| `serial_write` | Send data to serial port | `data` (required), `port` (optional if single), `newline` |
+| `serial_write_then_read` | Send and wait for response | `data` (required), `port` (optional if single), `wait_time` |
+| `serial_get_history` | Get communication history | `port` (required), `limit` |
+| `serial_is_open` | Check if a port is open | `port` (required) |
 
-> **用户**: 帮我把LED1打开  
-> **AI**: 我先连接串口并发送命�?..
+> **Note**: All operation tools (write/close/write_then_read) require a `port`. If only one port is open, the tool will auto-infer it. If multiple ports are open, you must explicitly pass the `port` parameter.
+
+**Example conversation:**
+
+> **User**: Turn on LED1  
+> **AI**: Let me connect to the serial port and send the command...
 > ```
-> 使用 serial_open(port="COM3")
-> 使用 serial_write(data="LED1 ON")
+> Use serial_open(port="COM3")
+> Use serial_write(data="LED1 ON")
 > ```
-> 已发送命令，设备返回: `OK\r\nLED1=ON`
+> Command sent, device returned: `OK\r\nLED1=ON`
 
-## 技术栈
+## Tech Stack
 
 - **Backend**: Python, FastAPI, pyserial, WebSocket
 - **Frontend**: Vue 3, TypeScript, Vite, xterm.js
-- **Agent协议**: Model Context Protocol (MCP)
+- **Agent Protocol**: Model Context Protocol (MCP)
 
-## 目录结构
+## Project Structure
 
 ```
 AI_Serial/
-├── manager.py              # 服务管理�?(start/stop/restart/status)
+├── manager.py              # Service manager (start/stop/restart/status)
 ├── backend/
-�?  ├── main.py             # FastAPI + WebSocket 服务
-�?  ├── mcp_server.py       # MCP Server (stdio -> HTTP 代理)
-�?  ├── serial_manager.py   # 多串口管理器
-�?  └── requirements.txt
+│   ├── main.py             # FastAPI + WebSocket service
+│   ├── mcp_server.py       # MCP Server (stdio -> HTTP proxy)
+│   ├── serial_manager.py   # Multi-port serial manager
+│   └── requirements.txt
 ├── frontend/
-�?  └── src/
-�?      ├── App.vue
-�?      ├── components/
-�?      �?  └── TerminalPanel.vue
-�?      ├── composables/
-�?      �?  └── useSerial.ts
-�?      └── styles/
-�?          └── main.css
-├── mcp-config/             # �?Agent 工具�?MCP 配置示例
-�?  ├── claude_desktop_config.json
-�?  ├── claude_code_settings.json
-�?  ├── cursor_mcp.json
-�?  ├── vscode_mcp.json
-�?  ├── cline_mcp_settings.json
-�?  ├── continue_mcp.yaml
-�?  ├── continue_mcp_config.json
-�?  ├── windsurf_mcp_config.json
-�?  ├── opencode_mcp.json
-�?  ├── codex_config.toml
-�?  └── zed_settings.json
-└── README.md
+│   └── src/
+│       ├── App.vue
+│       ├── components/
+│       │   └── TerminalPanel.vue
+│       ├── composables/
+│       │   └── useSerial.ts
+│       └── styles/
+│           └── main.css
+├── mcp-config/             # MCP config examples for each agent tool
+│   ├── claude_desktop_config.json
+│   ├── claude_code_settings.json
+│   ├── cursor_mcp.json
+│   ├── vscode_mcp.json
+│   ├── cline_mcp_settings.json
+│   ├── continue_mcp.yaml
+│   ├── continue_mcp_config.json
+│   ├── windsurf_mcp_config.json
+│   ├── opencode_mcp.json
+│   ├── codex_config.toml
+│   └── zed_settings.json
+├── assets/
+│   └── screenshots/        # Project screenshots for README
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.md
+│   │   └── feature_request.md
+│   └── PULL_REQUEST_TEMPLATE.md
+├── CONTRIBUTING.md
+├── LICENSE
+├── README.md
+└── README.zh-CN.md
 ```
 
-## 许可�?
+## License
+
 MIT
