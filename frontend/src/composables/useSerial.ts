@@ -19,14 +19,18 @@ const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${wind
 export function useSerial() {
   const ws = ref<WebSocket | null>(null)
   const isConnected = ref(false)
-  const isSerialOpen = ref(false)
-  const currentPort = ref<string | null>(null)
-  const currentBaudrate = ref<number | null>(null)
+  const isSerialOpen = ref<Record<string, boolean>>({})
+  const openPorts = ref<string[]>([])
   const ports = ref<SerialPort[]>([])
-  const messages = ref<SerialMessage[]>([])
+  const messages = ref<Record<string, SerialMessage[]>>({})
   const reconnectTimer = ref<ReturnType<typeof setTimeout> | null>(null)
 
-  const callbacks: ((msg: SerialMessage) => void)[] = []
+  // 按 port 分组的回调
+  const callbacks: Record<string, ((msg: SerialMessage) => void)[]> = {}
+
+  function ensureCallbacks(port: string) {
+    if (!callbacks[port]) callbacks[port] = []
+  }
 
   function connect() {
     if (ws.value?.readyState === WebSocket.OPEN) return
@@ -36,34 +40,52 @@ export function useSerial() {
     socket.onopen = () => {
       isConnected.value = true
       console.log('WebSocket connected')
-      // 请求端口列表
       socket.send(JSON.stringify({ action: 'list_ports' }))
     }
 
     socket.onmessage = (event) => {
       try {
-        const data = JSON.parse(event.data) as SerialMessage | { type: string; ports?: SerialPort[]; is_open?: boolean; port?: string; baudrate?: number }
+        const data = JSON.parse(event.data)
 
-        if (data.type === 'port_list' && 'ports' in data) {
-          ports.value = data.ports || []
+        if (data.type === 'port_list' && data.ports) {
+          ports.value = data.ports
+          return
+        }
+
+        if (data.type === 'open_ports') {
+          openPorts.value = data.ports || []
+          // 同步 isSerialOpen
+          const newState: Record<string, boolean> = {}
+          for (const p of openPorts.value) newState[p] = true
+          isSerialOpen.value = newState
           return
         }
 
         if (data.type === 'status') {
-          isSerialOpen.value = (data as any).is_open || false
-          currentPort.value = (data as any).port || null
-          currentBaudrate.value = (data as any).baudrate || null
+          const port = data.port
+          if (port) {
+            isSerialOpen.value[port] = data.is_open || false
+          }
           return
         }
 
         if (data.type === 'serial_message') {
-          const msg = data as SerialMessage
-          messages.value.push(msg)
-          // 限制历史记录数量
-          if (messages.value.length > 5000) {
-            messages.value = messages.value.slice(-3000)
+          const port = data.port || 'default'
+          const msg: SerialMessage = {
+            type: data.type,
+            source: data.source,
+            content: data.content,
+            timestamp: data.timestamp,
+            time_str: data.time_str,
           }
-          callbacks.forEach(cb => cb(msg))
+          if (!messages.value[port]) messages.value[port] = []
+          messages.value[port].push(msg)
+          // 限制历史记录数量
+          if (messages.value[port].length > 5000) {
+            messages.value[port] = messages.value[port].slice(-3000)
+          }
+          ensureCallbacks(port)
+          callbacks[port].forEach(cb => cb(msg))
         }
       } catch (e) {
         console.error('WS parse error:', e)
@@ -73,7 +95,6 @@ export function useSerial() {
     socket.onclose = () => {
       isConnected.value = false
       ws.value = null
-      // 自动重连
       reconnectTimer.value = setTimeout(() => connect(), 2000)
     }
 
@@ -94,16 +115,16 @@ export function useSerial() {
     isConnected.value = false
   }
 
-  function send(data: string, source: 'user' | 'ai' = 'user', newline: string = '\r\n') {
+  function send(port: string, data: string, source: 'user' | 'ai' = 'user', newline: string = '\r\n') {
     if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'write', data, source, newline }))
+      ws.value.send(JSON.stringify({ action: 'write', port, data, source, newline }))
     }
   }
 
-  function sendRaw(data: string) {
+  function sendRaw(port: string, data: string) {
     // 原始按键透传（交互模式），data 包含控制字符如 \r, \t, \x1b 等
     if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'raw_write', data }))
+      ws.value.send(JSON.stringify({ action: 'raw_write', port, data }))
     }
   }
 
@@ -113,10 +134,16 @@ export function useSerial() {
     }
   }
 
-  function closePort() {
+  function closePort(port: string) {
     if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'close' }))
+      ws.value.send(JSON.stringify({ action: 'close', port }))
     }
+    // 本地清理
+    delete messages.value[port]
+    delete isSerialOpen.value[port]
+    const idx = openPorts.value.indexOf(port)
+    if (idx >= 0) openPorts.value.splice(idx, 1)
+    delete callbacks[port]
   }
 
   function refreshPorts() {
@@ -125,13 +152,19 @@ export function useSerial() {
     }
   }
 
-  function onMessage(callback: (msg: SerialMessage) => void) {
-    callbacks.push(callback)
+  function onMessage(port: string, callback: (msg: SerialMessage) => void) {
+    ensureCallbacks(port)
+    callbacks[port].push(callback)
   }
 
-  function offMessage(callback: (msg: SerialMessage) => void) {
-    const idx = callbacks.indexOf(callback)
-    if (idx >= 0) callbacks.splice(idx, 1)
+  function offMessage(port: string, callback: (msg: SerialMessage) => void) {
+    ensureCallbacks(port)
+    const idx = callbacks[port].indexOf(callback)
+    if (idx >= 0) callbacks[port].splice(idx, 1)
+  }
+
+  function getHistory(port: string, limit: number = 1000): SerialMessage[] {
+    return messages.value[port] || []
   }
 
   onUnmounted(() => {
@@ -142,8 +175,7 @@ export function useSerial() {
     ws,
     isConnected,
     isSerialOpen,
-    currentPort,
-    currentBaudrate,
+    openPorts,
     ports,
     messages,
     connect,
@@ -155,5 +187,6 @@ export function useSerial() {
     refreshPorts,
     onMessage,
     offMessage,
+    getHistory,
   }
 }

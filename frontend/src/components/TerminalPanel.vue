@@ -6,69 +6,65 @@ import { WebLinksAddon } from 'xterm-addon-web-links'
 import { useSerial, type SerialMessage } from '../composables/useSerial'
 import 'xterm/css/xterm.css'
 
+const props = defineProps<{
+  port: string
+}>()
+
+const emit = defineEmits<{
+  (e: 'close', port: string): void
+}>()
+
 const terminalRef = ref<HTMLDivElement | null>(null)
 const serial = useSerial()
 
 let term: Terminal | null = null
 let fitAddon: FitAddon | null = null
 
-const selectedPort = ref('')
 const baudrate = ref(115200)
-const interactiveMode = ref(true)   // true=交互模式(像MobaXterm), false=命令模式
-const localEcho = ref(false)        // 本地回显（设备不回显时开启）
+const interactiveMode = ref(true)
+const localEcho = ref(false)
 const autoScroll = ref(true)
-const showAiLog = ref(true)         // 交互模式下是否显示AI操作提示
+const showAiLog = ref(true)
 
 const inputText = ref('')
 const newlineMode = ref('\r\n')
-
-// 命令模式：带颜色标签的日志显示
-function appendLogMessage(msg: SerialMessage) {
-  if (!term) return
-
-  const time = `[${msg.time_str}] `
-  const reset = '\x1b[0m'
-  let line = ''
-
-  if (msg.source === 'device') {
-    line = `\x1b[38;2;134;239;172m${time}${msg.content}${reset}`
-  } else if (msg.source === 'user') {
-    line = `\r\n\x1b[38;2;250;204;21m${time}[用户] ${msg.content}${reset}\r\n`
-  } else if (msg.source === 'ai') {
-    line = `\r\n\x1b[38;2;96;165;250m${time}[AI] ${msg.content}${reset}\r\n`
-  } else {
-    line = `\r\n\x1b[38;2;156;163;175m${time}[系统] ${msg.content}${reset}\r\n`
-  }
-
-  term.write(line)
-  if (autoScroll.value) term.scrollToBottom()
-}
 
 // 交互模式：直接透传显示
 function appendInteractiveMessage(msg: SerialMessage) {
   if (!term) return
 
   if (msg.source === 'device') {
-    // 设备返回直接写入终端
     term.write(msg.content)
     if (autoScroll.value) term.scrollToBottom()
   } else if (msg.source === 'system') {
-    // 系统消息灰色显示在终端底部
     term.write(`\r\n\x1b[90m[系统] ${msg.content}\x1b[0m\r\n`)
     if (autoScroll.value) term.scrollToBottom()
   } else if (msg.source === 'ai' && showAiLog.value) {
-    // AI 操作提示（可选）
     term.write(`\r\n\x1b[94m[AI] ${msg.content}\x1b[0m\r\n`)
     if (autoScroll.value) term.scrollToBottom()
   }
-  // 用户发送的在交互模式下不显示（由设备echo或本地回显处理）
 }
 
 function appendMessage(msg: SerialMessage) {
   if (interactiveMode.value) {
     appendInteractiveMessage(msg)
   } else {
-    appendLogMessage(msg)
+    // 命令模式日志
+    if (!term) return
+    const time = `[${msg.time_str}] `
+    const reset = '\x1b[0m'
+    let line = ''
+    if (msg.source === 'device') {
+      line = `\x1b[38;2;134;239;172m${time}${msg.content}${reset}`
+    } else if (msg.source === 'user') {
+      line = `\r\n\x1b[38;2;250;204;21m${time}[用户] ${msg.content}${reset}\r\n`
+    } else if (msg.source === 'ai') {
+      line = `\r\n\x1b[38;2;96;165;250m${time}[AI] ${msg.content}${reset}\r\n`
+    } else {
+      line = `\r\n\x1b[38;2;156;163;175m${time}[系统] ${msg.content}${reset}\r\n`
+    }
+    term.write(line)
+    if (autoScroll.value) term.scrollToBottom()
   }
 }
 
@@ -83,11 +79,10 @@ function clearTerminal() {
   }
 }
 
-// 命令模式发送
 function sendInput() {
   const text = inputText.value.trim()
   if (!text) return
-  serial.send(text, 'user', newlineMode.value)
+  serial.send(props.port, text, 'user', newlineMode.value)
   inputText.value = ''
 }
 
@@ -99,17 +94,12 @@ function handleKeydown(e: KeyboardEvent) {
 }
 
 function handleOpen() {
-  if (selectedPort.value) {
-    serial.openPort(selectedPort.value, baudrate.value)
-  }
+  serial.openPort(props.port, baudrate.value)
 }
 
 function handleClose() {
-  serial.closePort()
-}
-
-function handleRefresh() {
-  serial.refreshPorts()
+  serial.closePort(props.port)
+  emit('close', props.port)
 }
 
 // 初始化 xterm
@@ -127,7 +117,7 @@ onMounted(() => {
     cursorBlink: true,
     scrollback: 10000,
     allowTransparency: false,
-    convertEol: false,  // 由设备控制换行，避免额外转换
+    convertEol: false,
     cursorStyle: 'block',
     tabStopWidth: 4,
   })
@@ -139,16 +129,15 @@ onMounted(() => {
   term.open(terminalRef.value)
   fitAddon.fit()
 
-  term.write('\x1b[90m--- AI Serial Bridge 终端已就绪 ---\x1b[0m\r\n')
+  term.write(`\x1b[90m--- ${props.port} 终端已就绪 ---\x1b[0m\r\n`)
   term.write('\x1b[90m等待串口连接...\x1b[0m\r\n')
 
   // 交互模式：监听按键直接透传串口
-  // 使用缓冲减少 WebSocket 往返，降低输入延迟
   let keyBuffer = ''
   let keyBufferTimer: ReturnType<typeof setTimeout> | null = null
   const flushKeyBuffer = () => {
     if (keyBuffer) {
-      serial.sendRaw(keyBuffer)
+      serial.sendRaw(props.port, keyBuffer)
       keyBuffer = ''
     }
     keyBufferTimer = null
@@ -157,24 +146,24 @@ onMounted(() => {
   term.onData((data) => {
     if (!term) return
     if (!interactiveMode.value) return
-    if (!serial.isSerialOpen.value) return
+    if (!serial.isSerialOpen.value[props.port]) return
 
-    // 本地回显（设备不回显时开启）
     if (localEcho.value) {
       term.write(data)
     }
 
-    // 缓冲按键，5ms 后批量发送，减少 WebSocket 往返
     keyBuffer += data
     if (keyBufferTimer) clearTimeout(keyBufferTimer)
     keyBufferTimer = setTimeout(flushKeyBuffer, 5)
   })
 
-  // 连接 WebSocket
-  serial.connect()
+  // 连接 WebSocket（全局只连一次）
+  if (!serial.isConnected.value) {
+    serial.connect()
+  }
 
-  // 注册消息回调
-  serial.onMessage(appendMessage)
+  // 注册消息回调（只接收本 port 的消息）
+  serial.onMessage(props.port, appendMessage)
 
   // 窗口大小调整
   const handleResize = () => {
@@ -184,15 +173,15 @@ onMounted(() => {
 
   onUnmounted(() => {
     window.removeEventListener('resize', handleResize)
-    serial.offMessage(appendMessage)
+    serial.offMessage(props.port, appendMessage)
     term?.dispose()
     term = null
   })
 })
 
 // 首次收到数据清空提示
-watch(() => serial.messages.value.length, (newLen, oldLen) => {
-  if (oldLen === 0 && newLen > 0 && term) {
+watch(() => serial.messages.value[props.port]?.length, (newLen, oldLen) => {
+  if (oldLen === 0 && newLen && newLen > 0 && term) {
     term.clear()
   }
 })
@@ -200,17 +189,12 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
 
 <template>
   <div class="terminal-panel">
-    <!-- 顶部工具栏 -->
+    <!-- 工具栏 -->
     <div class="toolbar">
       <div class="toolbar-group">
-        <select v-model="selectedPort" class="select" :disabled="serial.isSerialOpen.value">
-          <option value="" disabled>选择串口</option>
-          <option v-for="p in serial.ports.value" :key="p.device" :value="p.device">
-            {{ p.device }} {{ p.description ? `- ${p.description}` : '' }}
-          </option>
-        </select>
+        <span class="port-label">{{ props.port }}</span>
 
-        <select v-model="baudrate" class="select" :disabled="serial.isSerialOpen.value">
+        <select v-model="baudrate" class="select" :disabled="serial.isSerialOpen.value[props.port]">
           <option :value="9600">9600</option>
           <option :value="19200">19200</option>
           <option :value="38400">38400</option>
@@ -222,9 +206,8 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
         </select>
 
         <button
-          v-if="!serial.isSerialOpen.value"
+          v-if="!serial.isSerialOpen.value[props.port]"
           class="btn btn-primary"
-          :disabled="!selectedPort"
           @click="handleOpen"
         >
           打开串口
@@ -236,28 +219,19 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
         >
           关闭串口
         </button>
-
-        <button class="btn btn-secondary" @click="handleRefresh">
-          刷新
-        </button>
       </div>
 
       <div class="toolbar-group">
-        <span class="status-badge" :class="{ active: serial.isConnected.value }">
-          WS: {{ serial.isConnected.value ? '已连接' : '未连接' }}
-        </span>
-        <span class="status-badge" :class="{ active: serial.isSerialOpen.value }">
-          串口: {{ serial.isSerialOpen.value ? `${serial.currentPort.value} @ ${serial.currentBaudrate.value}` : '未打开' }}
+        <span class="status-badge" :class="{ active: serial.isSerialOpen.value[props.port] }">
+          {{ serial.isSerialOpen.value[props.port] ? `已连接 @ ${baudrate}` : '未打开' }}
         </span>
       </div>
 
       <div class="toolbar-group">
-        <!-- 模式切换 -->
         <button
           class="btn"
           :class="interactiveMode ? 'btn-primary' : 'btn-secondary'"
           @click="interactiveMode = true"
-          title="像 MobaXterm 一样直接在终端交互"
         >
           交互模式
         </button>
@@ -265,7 +239,6 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
           class="btn"
           :class="!interactiveMode ? 'btn-primary' : 'btn-secondary'"
           @click="interactiveMode = false"
-          title="命令模式：底部输入框发送"
         >
           命令模式
         </button>
@@ -273,11 +246,6 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
         <label v-if="interactiveMode" class="checkbox" title="设备不回显时开启">
           <input v-model="localEcho" type="checkbox" />
           本地回显
-        </label>
-
-        <label v-if="!interactiveMode" class="checkbox">
-          <input v-model="autoScroll" type="checkbox" />
-          自动滚动
         </label>
 
         <button class="btn btn-secondary" @click="clearTerminal">清空</button>
@@ -300,12 +268,12 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
         type="text"
         class="input"
         placeholder="输入命令发送给串口... (Enter发送)"
-        :disabled="!serial.isSerialOpen.value"
+        :disabled="!serial.isSerialOpen.value[props.port]"
         @keydown="handleKeydown"
       />
       <button
         class="btn btn-primary"
-        :disabled="!serial.isSerialOpen.value || !inputText.trim()"
+        :disabled="!serial.isSerialOpen.value[props.port] || !inputText.trim()"
         @click="sendInput"
       >
         发送
@@ -315,7 +283,7 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
     <!-- 底部提示栏（仅交互模式显示） -->
     <div v-else class="hint-bar">
       <span class="hint">
-        💡 交互模式：直接在终端输入，Tab 补全、方向键、Ctrl+C 等均支持
+        交互模式：直接在终端输入，Tab 补全、方向键、Ctrl+C 等均支持
         <template v-if="localEcho"> | 本地回显已开启</template>
       </span>
       <label class="checkbox">
@@ -351,6 +319,16 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
   gap: 8px;
 }
 
+.port-label {
+  font-size: 14px;
+  font-weight: 600;
+  color: #58a6ff;
+  padding: 4px 10px;
+  background-color: #21262d;
+  border-radius: 6px;
+  border: 1px solid #30363d;
+}
+
 .select {
   padding: 6px 10px;
   background-color: #21262d;
@@ -359,7 +337,7 @@ watch(() => serial.messages.value.length, (newLen, oldLen) => {
   border-radius: 6px;
   font-size: 13px;
   outline: none;
-  min-width: 140px;
+  min-width: 100px;
 }
 
 .select:focus {

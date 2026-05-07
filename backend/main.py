@@ -1,6 +1,7 @@
 """
 AI Serial Bridge - FastAPI Backend
 提供 HTTP API + WebSocket 实时数据推送
+支持多串口同时连接
 """
 
 import asyncio
@@ -13,7 +14,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
-from serial_manager import SerialManager, serial_manager, MessageSource, SerialMessage
+from serial_manager import SerialPortManager, serial_manager, MessageSource, SerialMessage
 
 
 class OpenPortRequest(BaseModel):
@@ -61,7 +62,7 @@ manager = ConnectionManager()
 _event_loop: asyncio.AbstractEventLoop | None = None
 
 
-def on_serial_message(msg: SerialMessage):
+def on_serial_message(port: str, msg: SerialMessage):
     """串口消息回调 -> 广播到所有 WebSocket 客户端
     注意：此回调运行在后台读取线程，必须用 run_coroutine_threadsafe
     """
@@ -69,6 +70,7 @@ def on_serial_message(msg: SerialMessage):
         return
     asyncio.run_coroutine_threadsafe(manager.broadcast({
         "type": "serial_message",
+        "port": port,
         "source": msg.source.value,
         "content": msg.content,
         "timestamp": msg.timestamp,
@@ -76,13 +78,20 @@ def on_serial_message(msg: SerialMessage):
     }), _event_loop)
 
 
-async def broadcast_status():
-    """广播当前串口状态给所有 WebSocket 客户端"""
+async def broadcast_status(port: str):
+    """广播指定串口状态给所有 WebSocket 客户端"""
     await manager.broadcast({
         "type": "status",
-        "is_open": serial_manager.is_open(),
-        "port": serial_manager._serial.port if serial_manager._serial else None,
-        "baudrate": serial_manager._serial.baudrate if serial_manager._serial else None
+        "port": port,
+        "is_open": serial_manager.is_open(port),
+    })
+
+
+async def broadcast_open_ports():
+    """广播已打开的串口列表"""
+    await manager.broadcast({
+        "type": "open_ports",
+        "ports": serial_manager.get_open_ports()
     })
 
 
@@ -100,7 +109,8 @@ async def lifespan(app: FastAPI):
     print("[API] http://localhost:8000")
     yield
     print("[Shutdown] 关闭中...")
-    serial_manager.close()
+    for port in serial_manager.get_open_ports():
+        serial_manager.close(port)
 
 
 app = FastAPI(title="AI Serial Bridge", lifespan=lifespan)
@@ -121,52 +131,59 @@ async def list_ports() -> List[PortInfo]:
     return [PortInfo(**p) for p in serial_manager.list_ports()]
 
 
+@app.get("/api/open-ports")
+async def get_open_ports():
+    """获取已打开的串口列表"""
+    return {"ports": serial_manager.get_open_ports()}
+
+
 @app.post("/api/open")
 async def open_port(req: OpenPortRequest):
     """打开串口"""
     ok = serial_manager.open(req.port, req.baudrate)
     if ok:
-        await broadcast_status()
+        await broadcast_status(req.port)
+        await broadcast_open_ports()
     return {"success": ok, "port": req.port, "baudrate": req.baudrate}
 
 
 @app.post("/api/close")
-async def close_port():
-    """关闭串口"""
-    ok = serial_manager.close()
+async def close_port(port: str):
+    """关闭指定串口"""
+    ok = serial_manager.close(port)
     if ok:
-        await broadcast_status()
-    return {"success": ok}
+        await broadcast_status(port)
+        await broadcast_open_ports()
+    return {"success": ok, "port": port}
 
 
 @app.get("/api/status")
-async def get_status():
-    """获取串口状态"""
+async def get_status(port: str):
+    """获取指定串口状态"""
     return {
-        "is_open": serial_manager.is_open(),
-        "port": serial_manager._serial.port if serial_manager._serial else None,
-        "baudrate": serial_manager._serial.baudrate if serial_manager._serial else None
+        "port": port,
+        "is_open": serial_manager.is_open(port),
     }
 
 
 @app.post("/api/write")
-async def write_data(req: WriteRequest):
-    """发送数据到串口"""
-    ok = serial_manager.write(req.data, MessageSource.USER, req.encoding, req.newline)
-    return {"success": ok}
+async def write_data(req: WriteRequest, port: str):
+    """发送数据到指定串口"""
+    ok = serial_manager.write(port, req.data, MessageSource.USER, req.encoding, req.newline)
+    return {"success": ok, "port": port}
 
 
 @app.post("/api/write-ai")
-async def write_ai_data(req: WriteRequest):
-    """AI 发送数据到串口（前端通过此接口标记来源为AI）"""
-    ok = serial_manager.write(req.data, MessageSource.AI, req.encoding, req.newline)
-    return {"success": ok}
+async def write_ai_data(req: WriteRequest, port: str):
+    """AI 发送数据到指定串口"""
+    ok = serial_manager.write(port, req.data, MessageSource.AI, req.encoding, req.newline)
+    return {"success": ok, "port": port}
 
 
 @app.get("/api/history")
-async def get_history(limit: int = 1000):
-    """获取历史消息"""
-    history = serial_manager.get_history(limit)
+async def get_history(port: str, limit: int = 1000):
+    """获取指定串口的历史消息"""
+    history = serial_manager.get_history(port, limit)
     return [
         {
             "source": h.source.value,
@@ -183,12 +200,10 @@ async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 实时数据推送"""
     await manager.connect(websocket)
 
-    # 发送当前状态
+    # 发送当前已打开的串口列表
     await websocket.send_json({
-        "type": "status",
-        "is_open": serial_manager.is_open(),
-        "port": serial_manager._serial.port if serial_manager._serial else None,
-        "baudrate": serial_manager._serial.baudrate if serial_manager._serial else None
+        "type": "open_ports",
+        "ports": serial_manager.get_open_ports()
     })
 
     try:
@@ -197,31 +212,35 @@ async def websocket_endpoint(websocket: WebSocket):
             try:
                 cmd = json.loads(data)
                 action = cmd.get("action")
+                port = cmd.get("port", "")
 
                 if action == "write":
                     text = cmd.get("data", "")
                     source_val = cmd.get("source", "user")
                     newline = cmd.get("newline", "\r\n")
                     source = MessageSource.USER if source_val == "user" else MessageSource.AI
-                    serial_manager.write(text, source, newline=newline)
+                    serial_manager.write(port, text, source, newline=newline)
 
                 elif action == "raw_write":
                     text = cmd.get("data", "")
                     if text:
                         raw = text.encode("latin-1")
-                        serial_manager.write_raw(raw, MessageSource.USER)
+                        serial_manager.write_raw(port, raw, MessageSource.USER)
 
                 elif action == "open":
-                    port = cmd.get("port", "")
+                    p = cmd.get("port", "")
                     baud = cmd.get("baudrate", 115200)
-                    ok = serial_manager.open(port, baud)
+                    ok = serial_manager.open(p, baud)
                     if ok:
-                        await broadcast_status()
+                        await broadcast_status(p)
+                        await broadcast_open_ports()
 
                 elif action == "close":
-                    ok = serial_manager.close()
+                    p = cmd.get("port", "")
+                    ok = serial_manager.close(p)
                     if ok:
-                        await broadcast_status()
+                        await broadcast_status(p)
+                        await broadcast_open_ports()
 
                 elif action == "list_ports":
                     ports = serial_manager.list_ports()

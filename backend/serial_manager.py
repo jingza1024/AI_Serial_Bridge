@@ -293,5 +293,94 @@ class SerialManager:
                 pass
 
 
-# 全局单例
-serial_manager = SerialManager()
+# 全局单例 - 多串口管理器
+class SerialPortManager:
+    """管理多个串口连接，支持同时打开多个设备"""
+
+    def __init__(self):
+        self._ports: Dict[str, SerialManager] = {}
+        self._lock = threading.Lock()
+        self._callbacks: List[Callable[[str, SerialMessage], None]] = []
+
+    def list_ports(self) -> List[Dict[str, str]]:
+        return SerialManager().list_ports()
+
+    def get_open_ports(self) -> List[str]:
+        """获取当前已打开的串口列表"""
+        with self._lock:
+            return [p for p, sm in self._ports.items() if sm.is_open()]
+
+    def is_open(self, port: str) -> bool:
+        with self._lock:
+            if port not in self._ports:
+                return False
+            return self._ports[port].is_open()
+
+    def open(self, port: str, baudrate: int = 115200) -> bool:
+        """打开指定串口"""
+        with self._lock:
+            if port in self._ports and self._ports[port].is_open():
+                # 已经打开，直接返回成功
+                return True
+
+            sm = SerialManager()
+            # 包装回调，带上 port 信息
+            def make_callback(port_name: str):
+                def callback(msg: SerialMessage):
+                    for cb in self._callbacks:
+                        cb(port_name, msg)
+                return callback
+            sm.register_callback(make_callback(port))
+
+            ok = sm.open(port, baudrate)
+            if ok:
+                self._ports[port] = sm
+            return ok
+
+    def close(self, port: str) -> bool:
+        """关闭指定串口"""
+        with self._lock:
+            if port not in self._ports:
+                return False
+            sm = self._ports.pop(port)
+            return sm.close()
+
+    def write(self, port: str, data: str, source: MessageSource = MessageSource.USER,
+              encoding: str = "utf-8", newline: str = "\r\n") -> bool:
+        """向指定串口发送数据"""
+        with self._lock:
+            if port not in self._ports:
+                return False
+            return self._ports[port].write(data, source, encoding, newline)
+
+    def write_raw(self, port: str, data: bytes, source: MessageSource = MessageSource.USER) -> bool:
+        """向指定串口发送原始字节"""
+        with self._lock:
+            if port not in self._ports:
+                return False
+            return self._ports[port].write_raw(data, source)
+
+    def read(self, port: str, size: int = 1024, timeout: float = 1.0) -> Optional[str]:
+        """从指定串口读取数据"""
+        with self._lock:
+            if port not in self._ports:
+                return None
+            return self._ports[port].read(size, timeout)
+
+    def get_history(self, port: str, limit: int = 1000) -> List[SerialMessage]:
+        """获取指定串口的历史记录"""
+        with self._lock:
+            if port not in self._ports:
+                return []
+            return self._ports[port].get_history(limit)
+
+    def register_callback(self, callback: Callable[[str, SerialMessage], None]):
+        """注册数据接收回调，参数: (port, message)"""
+        self._callbacks.append(callback)
+
+    def unregister_callback(self, callback: Callable[[str, SerialMessage], None]):
+        if callback in self._callbacks:
+            self._callbacks.remove(callback)
+
+
+serial_manager = SerialPortManager()

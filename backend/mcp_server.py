@@ -63,11 +63,16 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="serial_close",
-            description="关闭当前打开的串口",
+            description="关闭指定串口",
             inputSchema={
                 "type": "object",
-                "properties": {},
-                "required": []
+                "properties": {
+                    "port": {
+                        "type": "string",
+                        "description": "要关闭的串口名称，例如 'COM3'"
+                    }
+                },
+                "required": ["port"]
             }
         ),
         Tool(
@@ -208,24 +213,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 return [TextContent(type="text", text=f"📤 发送: {data}\n⏱️ 等待 {wait_time}s 后未收到响应")]
 
         elif name == "serial_is_open":
-            r = await api_get("/api/status")
+            port = arguments.get("port", "")
+            if not port:
+                return [TextContent(type="text", text="错误: 请指定串口")]
+            r = await api_get(f"/api/status?port={port}")
             status = r.json()
             is_open = status.get("is_open", False)
-            port = status.get("port")
-            baud = status.get("baudrate")
-            if is_open and port:
-                return [TextContent(type="text", text=f"串口状态: 已打开 ({port} @ {baud}bps)")]
+            if is_open:
+                return [TextContent(type="text", text=f"串口 {port} 状态: 已打开")]
             else:
-                return [TextContent(type="text", text="串口状态: 未打开")]
+                return [TextContent(type="text", text=f"串口 {port} 状态: 未打开")]
 
         elif name == "serial_get_history":
+            port = arguments.get("port", "")
             limit = arguments.get("limit", 100)
-            r = await api_get(f"/api/history?limit={limit}")
+            if not port:
+                return [TextContent(type="text", text="错误: 请指定串口")]
+            r = await api_get(f"/api/history?port={port}&limit={limit}")
             history = r.json()
             if not history:
                 return [TextContent(type="text", text="暂无通信记录")]
 
-            lines = ["串口通信历史:"]
+            lines = [f"串口 {port} 通信历史:"]
             for h in history:
                 ts = h.get("time_str", "")
                 source = h.get("source", "")
