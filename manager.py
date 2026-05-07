@@ -164,14 +164,13 @@ def start():
     
     pids = {}
     
-    # 启动后端
+    # 启动后端（stdout/stderr继承终端显示日志，stdin关闭防止抢占键盘）
     print("[START] 正在启动后端服务...")
     backend_proc = subprocess.Popen(
         [sys.executable, str(BACKEND_DIR / "main.py")],
         cwd=str(BACKEND_DIR),
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+        stdin=subprocess.DEVNULL,
     )
     pids["backend"] = backend_proc.pid
     
@@ -184,12 +183,13 @@ def start():
     else:
         print(f"[WARN] 后端启动可能未完成，请检查")
     
-    # 启动前端（直接调用 vite，避免 npm.cmd 中间层）
+    # 启动前端（stdout/stderr继承终端，stdin关闭）
     print("[START] 正在启动前端服务...")
     frontend_proc = subprocess.Popen(
         ["npx.cmd", "vite", "--host"],
         cwd=str(FRONTEND_DIR),
         creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        stdin=subprocess.DEVNULL,
     )
     pids["frontend"] = frontend_proc.pid
     
@@ -212,11 +212,32 @@ def start():
     print(f"  前端界面:   http://localhost:{FRONTEND_PORT}")
     print(f"  MCP 配置:   C:\\Users\\{os.getlogin()}\\.kimi\\mcp.json")
     print()
-    print("  用法:")
-    print("    python manager.py status   查看状态")
-    print("    python manager.py stop     停止服务")
-    print("    python manager.py restart  重启服务")
+    print("  按 Ctrl+C 停止所有服务")
     print("=" * 50)
+    print()
+    
+    # 主循环：占据终端，显示日志，等待 Ctrl+C
+    try:
+        while True:
+            backend_alive = backend_proc.poll() is None
+            frontend_alive = frontend_proc.poll() is None
+            
+            if not backend_alive:
+                print("\n[WARN] 后端进程已退出")
+                break
+            
+            if not frontend_alive:
+                print("\n[WARN] 前端进程已退出")
+                break
+            
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\n[INFO] 收到 Ctrl+C，正在停止服务...")
+        _kill_process_tree(backend_proc.pid)
+        _kill_process_tree(frontend_proc.pid)
+        PID_FILE.unlink(missing_ok=True)
+        print("[STOP] 所有服务已停止")
+    
     return 0
 
 
