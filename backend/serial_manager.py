@@ -149,7 +149,8 @@ class SerialManager:
                 self._serial.write(raw)
                 self._serial.flush()
 
-                display = data.rstrip("\n\r")
+                # 清理显示内容中的换行符，避免终端显示可见的 \r\n
+                display = data.replace("\r", "").replace("\n", "")
                 self._notify(SerialMessage(
                     source=source,
                     content=display,
@@ -185,6 +186,10 @@ class SerialManager:
                     text = data.decode("utf-8")
                 except UnicodeDecodeError:
                     text = data.hex()
+
+                # 清理显示内容中的换行符（只对非DEVICE消息）
+                if source != MessageSource.DEVICE:
+                    text = text.replace("\r", "").replace("\n", "")
 
                 self._notify(SerialMessage(
                     source=source,

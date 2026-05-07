@@ -132,6 +132,20 @@ onMounted(() => {
   term.write(`\x1b[90m--- ${props.port} 终端已就绪 ---\x1b[0m\r\n`)
   term.write('\x1b[90m等待串口连接...\x1b[0m\r\n')
 
+  // 命令模式下禁用终端输入，防止用户在终端上直接输入导致显示异常
+  watch(interactiveMode, (val) => {
+    if (term) {
+      term.options.disableStdin = !val
+    }
+  })
+
+  // 命令模式下禁用终端输入，防止用户在终端上直接输入导致显示异常
+  watch(interactiveMode, (val) => {
+    if (term) {
+      term.options.disableStdin = !val
+    }
+  })
+
   // 交互模式：监听按键直接透传串口
   let keyBuffer = ''
   let keyBufferTimer: ReturnType<typeof setTimeout> | null = null
@@ -258,10 +272,10 @@ watch(() => serial.messages.value[props.port]?.length, (newLen, oldLen) => {
     <!-- 底部命令栏（仅命令模式显示） -->
     <div v-if="!interactiveMode" class="input-bar">
       <select v-model="newlineMode" class="select" title="换行符">
-        <option value="\r\n">CRLF (\r\n)</option>
-        <option value="\n">LF (\n)</option>
-        <option value="\r">CR (\r)</option>
-        <option value="">无</option>
+        <option :value="'\r\n'">CRLF (\r\n)</option>
+        <option :value="'\n'">LF (\n)</option>
+        <option :value="'\r'">CR (\r)</option>
+        <option :value="''">无</option>
       </select>
       <input
         v-model="inputText"
