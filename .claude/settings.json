@@ -5,7 +5,11 @@
       "mcp__ai-serial-bridge__serial_open",
       "mcp__ai-serial-bridge__serial_write_then_read",
       "mcp__ai-serial-bridge__serial_close",
-      "Bash(taskkill /F /IM python.exe)"
+      "Bash(taskkill /F /IM python.exe)",
+      "Bash(rm -rf __pycache__)",
+      "Bash(netstat -ano)",
+      "Bash(taskkill /F /PID 21660)",
+      "Bash(powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force\")"
     ]
   }
 }

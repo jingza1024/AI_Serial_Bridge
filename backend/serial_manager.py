@@ -271,30 +271,47 @@ class SerialManager:
 
                         # 检查是否有完整行（换行符）
                         while b'\n' in buffer or b'\r' in buffer:
-                            # 找到第一个换行符
+                            # 优先查找 \r\n，然后是 \n 或 \r
                             idx = -1
-                            for i, b in enumerate(buffer):
-                                if b in (ord('\n'), ord('\r')):
-                                    idx = i
-                                    break
-                            if idx >= 0:
-                                # 提取一行（包含换行符）
-                                line_bytes = buffer[:idx + 1]
-                                buffer = buffer[idx + 1:]
+                            newline_len = 1
 
-                                # 跳过空行（只有 \r 或 \n）
-                                stripped = line_bytes.rstrip(b'\r\n')
-                                if stripped:
+                            # 先查找 \r\n
+                            crlf_pos = buffer.find(b'\r\n')
+                            if crlf_pos >= 0:
+                                idx = crlf_pos
+                                newline_len = 2
+                            else:
+                                # 查找 \n 或 \r
+                                for i, b in enumerate(buffer):
+                                    if b in (ord('\n'), ord('\r')):
+                                        idx = i
+                                        break
+
+                            if idx >= 0:
+                                # 提取一行（不包含换行符）
+                                line_bytes = buffer[:idx]
+                                buffer = buffer[idx + newline_len:]
+
+                                if line_bytes:
                                     try:
-                                        text = stripped.decode("utf-8")
+                                        text = line_bytes.decode("utf-8")
                                     except UnicodeDecodeError:
-                                        text = stripped.hex()
+                                        text = line_bytes.hex()
 
                                     msg = SerialMessage(
                                         source=MessageSource.DEVICE,
-                                        content=text,
+                                        content=text + "\r\n",
                                         timestamp=time.time(),
                                         raw_bytes=bytes(line_bytes)
+                                    )
+                                    self._notify(msg)
+                                else:
+                                    # 空行
+                                    msg = SerialMessage(
+                                        source=MessageSource.DEVICE,
+                                        content="\r\n",
+                                        timestamp=time.time(),
+                                        raw_bytes=b''
                                     )
                                     self._notify(msg)
                             else:

@@ -265,21 +265,25 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             # 等待设备响应
             await asyncio.sleep(wait_time)
 
-            # 获取历史记录中的最新设备返回
-            r = await api_get(f"/api/history?port={port}&limit=50")
+            # 获取历史记录
+            r = await api_get(f"/api/history?port={port}&limit=500")
             history = r.json()
 
-            # 过滤出设备返回，取最近的
-            device_msgs = [h for h in history if h.get("source") == "device"]
-            if device_msgs:
-                # 取最后几条设备消息拼接
-                recent = device_msgs[-10:]
-                lines = [f"📤 [{port}] 发送: {data}", "📥 收到:"]
-                for m in recent:
-                    lines.append(m["content"])
-                return [TextContent(type="text", text="\n".join(lines))]
-            else:
-                return [TextContent(type="text", text=f"📤 [{port}] 发送: {data}\n⏱️ 等待 {wait_time}s 后未收到响应")]
+            # 找到最后一条 AI 消息的位置，取其后的设备消息
+            ai_idx = -1
+            for i in range(len(history) - 1, -1, -1):
+                if history[i].get("source") == "ai":
+                    ai_idx = i
+                    break
+
+            if ai_idx >= 0:
+                # 取 AI 消息之后的所有设备消息
+                device_msgs = [h for h in history[ai_idx + 1:] if h.get("source") == "device"]
+                if device_msgs:
+                    content = "".join(m["content"] for m in device_msgs)
+                    return [TextContent(type="text", text=f"📤 [{port}] 发送: {data}\n📥 收到:\n{content}")]
+
+            return [TextContent(type="text", text=f"📤 [{port}] 发送: {data}\n⏱️ 等待 {wait_time}s 后未收到响应")]
 
         elif name == "serial_is_open":
             port = arguments.get("port", "")
