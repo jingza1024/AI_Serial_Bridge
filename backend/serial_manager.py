@@ -246,7 +246,11 @@ class SerialManager:
             return self._history[-limit:]
 
     def _read_loop(self):
-        """后台读取线程"""
+        """后台读取线程 - 带行缓冲"""
+        buffer = bytearray()
+        last_recv_time = 0
+        LINE_TIMEOUT = 0.05  # 50ms 无新数据则发送缓冲区内容
+
         while self._running:
             try:
                 if self._serial is None or not self._serial.is_open:
@@ -260,21 +264,61 @@ class SerialManager:
                         # 双重检查
                         if self._serial is None or not self._serial.is_open:
                             continue
-                        data = self._serial.read(min(available, 4096))
-                    if data:
-                        try:
-                            text = data.decode("utf-8")
-                        except UnicodeDecodeError:
-                            text = data.hex()
+                        chunk = self._serial.read(min(available, 4096))
+                    if chunk:
+                        buffer.extend(chunk)
+                        last_recv_time = time.time()
 
-                        msg = SerialMessage(
-                            source=MessageSource.DEVICE,
-                            content=text,
-                            timestamp=time.time(),
-                            raw_bytes=data
-                        )
-                        self._notify(msg)
+                        # 检查是否有完整行（换行符）
+                        while b'\n' in buffer or b'\r' in buffer:
+                            # 找到第一个换行符
+                            idx = -1
+                            for i, b in enumerate(buffer):
+                                if b in (ord('\n'), ord('\r')):
+                                    idx = i
+                                    break
+                            if idx >= 0:
+                                # 提取一行（包含换行符）
+                                line_bytes = buffer[:idx + 1]
+                                buffer = buffer[idx + 1:]
+
+                                # 跳过空行（只有 \r 或 \n）
+                                stripped = line_bytes.rstrip(b'\r\n')
+                                if stripped:
+                                    try:
+                                        text = stripped.decode("utf-8")
+                                    except UnicodeDecodeError:
+                                        text = stripped.hex()
+
+                                    msg = SerialMessage(
+                                        source=MessageSource.DEVICE,
+                                        content=text,
+                                        timestamp=time.time(),
+                                        raw_bytes=bytes(line_bytes)
+                                    )
+                                    self._notify(msg)
+                            else:
+                                break
                 else:
+                    # 检查缓冲区超时（设备输出不以换行结束的情况）
+                    if buffer and last_recv_time > 0:
+                        elapsed = time.time() - last_recv_time
+                        if elapsed >= LINE_TIMEOUT:
+                            try:
+                                text = buffer.decode("utf-8")
+                            except UnicodeDecodeError:
+                                text = buffer.hex()
+
+                            msg = SerialMessage(
+                                source=MessageSource.DEVICE,
+                                content=text,
+                                timestamp=time.time(),
+                                raw_bytes=bytes(buffer)
+                            )
+                            self._notify(msg)
+                            buffer = bytearray()
+                            last_recv_time = 0
+
                     time.sleep(0.002)  # 2ms 轮询，降低延迟
             except Exception as e:
                 if self._running:

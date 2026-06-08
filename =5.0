@@ -1,0 +1,8 @@
+Requirement already satisfied: pywebview in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (6.2.1)
+Requirement already satisfied: pythonnet in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (from pywebview) (3.0.5)
+Requirement already satisfied: proxy_tools in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (from pywebview) (0.1.0)
+Requirement already satisfied: bottle in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (from pywebview) (0.13.4)
+Requirement already satisfied: typing_extensions in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (from pywebview) (4.15.0)
+Requirement already satisfied: clr_loader<0.3.0,>=0.2.7 in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (from pythonnet->pywebview) (0.2.10)
+Requirement already satisfied: cffi>=1.17 in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (from clr_loader<0.3.0,>=0.2.7->pythonnet->pywebview) (2.0.0)
+Requirement already satisfied: pycparser in C:\Users\jingz\AppData\Local\Programs\Python\Python313\Lib\site-packages (from cffi>=1.17->clr_loader<0.3.0,>=0.2.7->pythonnet->pywebview) (3.0)

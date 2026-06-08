@@ -11,8 +11,11 @@ import time
 from contextlib import asynccontextmanager
 from typing import List, Optional
 
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 from serial_manager import SerialPortManager, serial_manager, MessageSource, SerialMessage
@@ -117,9 +120,12 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Serial Bridge", lifespan=lifespan)
 
-# CORS - 限制为本地开发环境，生产环境应配置具体域名
+# CORS - 桌面模式允许所有来源，开发模式限制为本地
+_desktop_mode = os.environ.get('AI_SERIAL_DESKTOP', '') == '1'
 _origins_env = os.environ.get("CORS_ORIGINS", "")
-if _origins_env:
+if _desktop_mode:
+    _allowed_origins = ["*"]  # 桌面应用，允许所有来源
+elif _origins_env:
     _allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
 else:
     _allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
@@ -281,7 +287,22 @@ async def websocket_endpoint(websocket: WebSocket):
         manager.disconnect(websocket)
 
 
+# --- 桌面模式：静态文件服务 ---
+_base_dir = Path(__file__).parent.parent  # 项目根目录
+_dist_dir = _base_dir / 'frontend' / 'dist'
+
+if _desktop_mode and _dist_dir.is_dir():
+    @app.get("/", include_in_schema=False)
+    async def serve_index():
+        """提供前端入口页面"""
+        return FileResponse(str(_dist_dir / 'index.html'))
+
+    # 挂载静态资源目录（JS、CSS、图片等）
+    app.mount("/", StaticFiles(directory=str(_dist_dir), html=True), name="frontend")
+
+
 if __name__ == "__main__":
     import uvicorn
-    _host = os.environ.get("HOST", "127.0.0.1")
-    uvicorn.run(app, host=_host, port=8000)
+    _host = os.environ.get("AI_SERIAL_HOST", "127.0.0.1")
+    _port = int(os.environ.get("AI_SERIAL_PORT", "8000"))
+    uvicorn.run(app, host=_host, port=_port)

@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm run *)",
+      "mcp__ai-serial-bridge__serial_open",
+      "mcp__ai-serial-bridge__serial_write_then_read",
+      "mcp__ai-serial-bridge__serial_close",
+      "Bash(taskkill /F /IM python.exe)"
+    ]
+  }
+}
