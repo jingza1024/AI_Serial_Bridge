@@ -31,7 +31,7 @@ const activeTab = computed(() => {
 })
 
 function generateId(): string {
-  return Date.now().toString(36) + Math.random().toString(36).substr(2, 5)
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 }
 
 function createTab(port: string, baudrate: number, shouldOpen: boolean = true) {
@@ -108,9 +108,10 @@ watch(() => [...serial.openPorts.value], (newPorts) => {
   const tabPorts = new Set(tabs.value.map(t => t.port))
 
   // 1) 后端有但 UI 没有 -> 自动创建标签（不重复发送 open 命令）
+  //    使用后端实际打开时使用的波特率，而非写死 115200
   for (const port of newPorts) {
     if (!tabPorts.has(port)) {
-      createTab(port, 115200, false)
+      createTab(port, serial.portBaudrates.value[port] ?? 115200, false)
     }
   }
 

@@ -17,8 +17,32 @@ import httpx
 import os
 
 BASE_URL = os.environ.get("AI_SERIAL_API_URL", "http://localhost:8000")
+_AUTH_TOKEN = os.environ.get("AI_SERIAL_TOKEN", "").strip()
 
 app = Server("ai-serial-bridge")
+
+# 复用单个 AsyncClient 以利用连接池，避免每次请求新建/销毁连接
+_client: httpx.AsyncClient | None = None
+
+
+async def _get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(timeout=10.0)
+    return _client
+
+
+async def _close_client() -> None:
+    global _client
+    if _client is not None and not _client.is_closed:
+        await _client.aclose()
+    _client = None
+
+
+def _auth_headers() -> dict:
+    """后端启用 token 鉴权时附带 Authorization 头。"""
+    return {"Authorization": f"Bearer {_AUTH_TOKEN}"} if _AUTH_TOKEN else {}
+
 
 # 延迟初始化语言（避免模块导入时阻塞）
 _lang_initialized = False
@@ -30,20 +54,19 @@ async def _init_lang():
     _lang_initialized = True
     lang = os.environ.get("AI_SERIAL_LANG", "zh")
     try:
-        async with httpx.AsyncClient() as client:
-            await client.post(f"{BASE_URL}/api/lang", json={"lang": lang}, timeout=2.0)
+        await api_post("/api/lang", {"lang": lang})
     except Exception:
         pass
 
 
 async def api_get(path: str):
-    async with httpx.AsyncClient() as client:
-        return await client.get(f"{BASE_URL}{path}", timeout=10.0)
+    client = await _get_client()
+    return await client.get(f"{BASE_URL}{path}", headers=_auth_headers())
 
 
 async def api_post(path: str, json_data: dict = None):
-    async with httpx.AsyncClient() as client:
-        return await client.post(f"{BASE_URL}{path}", json=json_data, timeout=10.0)
+    client = await _get_client()
+    return await client.post(f"{BASE_URL}{path}", json=json_data, headers=_auth_headers())
 
 
 async def _get_default_port() -> str:
@@ -147,11 +170,6 @@ async def list_tools() -> list[Tool]:
                         "type": "number",
                         "description": "发送后等待响应的时间（秒）",
                         "default": 1.0
-                    },
-                    "read_timeout": {
-                        "type": "number",
-                        "description": "读取超时时间（秒）",
-                        "default": 2.0
                     }
                 },
                 "required": ["data"]
@@ -207,7 +225,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             return [TextContent(type="text", text="\n".join(lines))]
 
         elif name == "serial_open":
-            port = arguments["port"]
+            port = arguments.get("port", "")
+            if not port:
+                return [TextContent(type="text", text="❌ 请指定 port 参数")]
             baud = arguments.get("baudrate", 115200)
             r = await api_post("/api/open", {"port": port, "baudrate": baud})
             ok = r.json().get("success", False)
@@ -255,7 +275,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     return [TextContent(type="text", text="❌ 请指定 port 参数（或确保只有一个串口打开）")]
             data = arguments["data"]
             wait_time = arguments.get("wait_time", 1.0)
-            read_timeout = arguments.get("read_timeout", 2.0)
 
             # 先发送
             r = await api_post(f"/api/write-ai?port={port}", {"data": data, "newline": "\r"})
@@ -329,12 +348,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
 async def main():
     await _init_lang()
-    async with stdio_server() as (read_stream, write_stream):
-        await app.run(
-            read_stream,
-            write_stream,
-            app.create_initialization_options()
-        )
+    try:
+        async with stdio_server() as (read_stream, write_stream):
+            await app.run(
+                read_stream,
+                write_stream,
+                app.create_initialization_options()
+            )
+    finally:
+        await _close_client()
 
 
 if __name__ == "__main__":

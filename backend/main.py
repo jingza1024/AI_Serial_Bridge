@@ -5,21 +5,37 @@ AI Serial Bridge - FastAPI Backend
 """
 
 import asyncio
+import hmac
 import json
 import os
 import time
 from contextlib import asynccontextmanager
-from typing import List, Optional
+from typing import List
+from urllib.parse import parse_qs
 
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel
 
 from serial_manager import SerialPortManager, serial_manager, MessageSource, SerialMessage
 from locales import set_lang, get_lang
+
+
+# --- 可选鉴权 token（opt-in）---
+# 设置环境变量 AI_SERIAL_TOKEN 后，所有 /api/*（除 /api/config）与 /ws 都需携带该 token。
+# 主要用于阻断浏览器跨站 (CSRF) 请求：跨站页面无法设置 Authorization 头、也无法读取同源才可访问的 /api/config。
+# 未设置时保持原有行为（本地开发免鉴权）。
+_AUTH_TOKEN = os.environ.get("AI_SERIAL_TOKEN", "").strip()
+
+
+def _token_ok(provided: str) -> bool:
+    """未启用 token 时一律放行；启用后使用恒定时间比较防止时序侧信道。"""
+    if not _AUTH_TOKEN:
+        return True
+    return bool(provided) and hmac.compare_digest(provided, _AUTH_TOKEN)
 
 
 class OpenPortRequest(BaseModel):
@@ -93,10 +109,10 @@ async def broadcast_status(port: str):
 
 
 async def broadcast_open_ports():
-    """广播已打开的串口列表"""
+    """广播已打开的串口列表（含波特率，供 Web UI 同步标签）"""
     await manager.broadcast({
         "type": "open_ports",
-        "ports": serial_manager.get_open_ports()
+        "ports": serial_manager.get_open_ports_detail()
     })
 
 
@@ -112,6 +128,8 @@ async def lifespan(app: FastAPI):
     print("[AI Serial Bridge] 启动")
     print("[WebSocket] ws://localhost:8000/ws")
     print("[API] http://localhost:8000")
+    if _AUTH_TOKEN:
+        print("[Auth] token 鉴权已启用")
     yield
     print("[Shutdown] 关闭中...")
     for port in serial_manager.get_open_ports():
@@ -120,13 +138,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="AI Serial Bridge", lifespan=lifespan)
 
-# CORS - 桌面模式允许所有来源，开发模式限制为本地
+# CORS 策略
+# - 桌面模式：前端由本服务同源提供，CORS 实际不参与；显式允许回环地址即可。
+# - 开发模式：仅允许本地 Vite 来源。
+# 注意：绝不使用 allow_origins=["*"] + allow_credentials=True（CORS 规范禁止，
+#       且会暴露硬件控制接口给任意跨站页面）。
 _desktop_mode = os.environ.get('AI_SERIAL_DESKTOP', '') == '1'
 _origins_env = os.environ.get("CORS_ORIGINS", "")
-if _desktop_mode:
-    _allowed_origins = ["*"]  # 桌面应用，允许所有来源
-elif _origins_env:
+if _origins_env:
     _allowed_origins = [o.strip() for o in _origins_env.split(",") if o.strip()]
+elif _desktop_mode:
+    _api_port = os.environ.get("AI_SERIAL_PORT", "8000")
+    _allowed_origins = [
+        f"http://127.0.0.1:{_api_port}",
+        f"http://localhost:{_api_port}",
+    ]
 else:
     _allowed_origins = ["http://localhost:5173", "http://127.0.0.1:5173"]
 
@@ -139,8 +165,30 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def _auth_middleware(request: Request, call_next):
+    """可选 token 鉴权：放行 /api/config（前端首次获取 token 用）、文档与静态资源。"""
+    path = request.url.path
+    if _AUTH_TOKEN and path.startswith("/api") and path != "/api/config":
+        auth = request.headers.get("authorization", "")
+        token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+        if not _token_ok(token):
+            return JSONResponse({"detail": "unauthorized"}, status_code=401)
+    return await call_next(request)
+
+
 class LangRequest(BaseModel):
     lang: str
+
+
+@app.get("/api/config")
+async def get_config():
+    """前端启动时读取：是否启用鉴权以及 token（仅同源可读）。
+
+    token 为空字符串表示未启用鉴权。由于 CORS 仅允许本地来源，
+    跨站页面无法读取本接口，从而无法伪造带 Authorization 头的请求。
+    """
+    return {"auth_required": bool(_AUTH_TOKEN), "token": _AUTH_TOKEN}
 
 
 @app.post("/api/lang")
@@ -164,7 +212,7 @@ async def list_ports() -> List[PortInfo]:
 
 @app.get("/api/open-ports")
 async def get_open_ports():
-    """获取已打开的串口列表"""
+    """获取已打开的串口列表（仅端口名，供 MCP 使用）"""
     return {"ports": serial_manager.get_open_ports()}
 
 
@@ -229,12 +277,19 @@ async def get_history(port: str, limit: int = 1000):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     """WebSocket 实时数据推送"""
+    # 可选 token 鉴权（通过 query 参数 ?token=）
+    if _AUTH_TOKEN:
+        qs = parse_qs(websocket.scope.get("query_string", b"").decode("utf-8", "ignore"))
+        if not _token_ok(qs.get("token", [""])[0]):
+            await websocket.close(code=1008)  # Policy Violation
+            return
+
     await manager.connect(websocket)
 
     # 发送当前已打开的串口列表
     await websocket.send_json({
         "type": "open_ports",
-        "ports": serial_manager.get_open_ports()
+        "ports": serial_manager.get_open_ports_detail()
     })
 
     try:
@@ -284,6 +339,9 @@ async def websocket_endpoint(websocket: WebSocket):
                 pass
 
     except WebSocketDisconnect:
+        pass
+    finally:
+        # 无论正常断开还是异常，都从连接表中移除，避免泄漏
         manager.disconnect(websocket)
 
 

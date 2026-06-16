@@ -1,4 +1,4 @@
-import { ref, onUnmounted } from 'vue'
+import { ref } from 'vue'
 
 export interface SerialMessage {
   type: string
@@ -14,32 +14,68 @@ export interface SerialPort {
   hwid: string
 }
 
-const WS_URL = `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}/ws`
+/**
+ * 关键设计：所有响应式状态与 WebSocket 连接位于 *模块级*，被全部组件共享。
+ * 早期版本在 useSerial() 函数体内创建状态，导致每个终端面板各开一条 WS 连接、
+ * 历史与打开状态彼此不同步。现在整个应用只有一条 WS、一份状态。
+ */
 
-export function useSerial() {
-  const ws = ref<WebSocket | null>(null)
-  const isConnected = ref(false)
-  const isSerialOpen = ref<Record<string, boolean>>({})
-  const openPorts = ref<string[]>([])
-  const ports = ref<SerialPort[]>([])
-  const messages = ref<Record<string, SerialMessage[]>>({})
-  const reconnectTimer = ref<ReturnType<typeof setTimeout> | null>(null)
+const ws = ref<WebSocket | null>(null)
+const isConnected = ref(false)
+const isSerialOpen = ref<Record<string, boolean>>({})
+const openPorts = ref<string[]>([])
+const ports = ref<SerialPort[]>([])
+const messages = ref<Record<string, SerialMessage[]>>({})
+const portBaudrates = ref<Record<string, number>>({})
 
-  // 按 port 分组的回调
-  const callbacks: Record<string, ((msg: SerialMessage) => void)[]> = {}
+// 按 port 分组的回调（显示用）
+const callbacks: Record<string, ((msg: SerialMessage) => void)[]> = {}
 
-  function ensureCallbacks(port: string) {
-    if (!callbacks[port]) callbacks[port] = []
+let _token = ''
+let _configLoaded = false
+let _connecting = false
+let _reconnectAttempts = 0
+let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+
+const MAX_RECONNECT_DELAY = 10000
+
+function ensureCallbacks(port: string) {
+  if (!callbacks[port]) callbacks[port] = []
+}
+
+function _wsUrl(): string {
+  const proto = window.location.protocol === 'https:' ? 'wss' : 'ws'
+  const base = `${proto}://${window.location.host}/ws`
+  return _token ? `${base}?token=${encodeURIComponent(_token)}` : base
+}
+
+async function _loadToken() {
+  try {
+    const resp = await fetch('/api/config')
+    const cfg = await resp.json()
+    _token = cfg?.token || ''
+  } catch {
+    _token = ''
   }
+}
 
-  function connect() {
+function connect() {
+  // 异步加载 token 后再建立连接（返回 Promise 便于调用方按需 await）
+  return (async () => {
     if (ws.value?.readyState === WebSocket.OPEN) return
+    if (_connecting) return
+    if (!_configLoaded) {
+      await _loadToken()
+      _configLoaded = true
+    }
 
-    const socket = new WebSocket(WS_URL)
+    _connecting = true
+    const socket = new WebSocket(_wsUrl())
 
     socket.onopen = () => {
+      _connecting = false
+      _reconnectAttempts = 0
       isConnected.value = true
-      console.log('WebSocket connected')
       socket.send(JSON.stringify({ action: 'list_ports' }))
     }
 
@@ -53,11 +89,20 @@ export function useSerial() {
         }
 
         if (data.type === 'open_ports') {
-          openPorts.value = data.ports || []
-          // 同步 isSerialOpen
-          const newState: Record<string, boolean> = {}
-          for (const p of openPorts.value) newState[p] = true
-          isSerialOpen.value = newState
+          // 兼容两种形态：["COM3"] 或 [{port:"COM3", baudrate:115200}]
+          const raw: any[] = data.ports || []
+          const list = raw.map((p: any) =>
+            typeof p === 'string' ? { port: p, baudrate: 115200 } : { port: p.port, baudrate: p.baudrate ?? 115200 }
+          )
+          openPorts.value = list.map(p => p.port)
+          const baudMap: Record<string, number> = {}
+          const stateMap: Record<string, boolean> = {}
+          for (const p of list) {
+            baudMap[p.port] = p.baudrate
+            stateMap[p.port] = true
+          }
+          portBaudrates.value = baudMap
+          isSerialOpen.value = stateMap
           return
         }
 
@@ -93,9 +138,14 @@ export function useSerial() {
     }
 
     socket.onclose = () => {
+      _connecting = false
       isConnected.value = false
       ws.value = null
-      reconnectTimer.value = setTimeout(() => connect(), 2000)
+      // 指数退避重连，封顶 10s
+      _reconnectAttempts += 1
+      const delay = Math.min(1000 * 2 ** Math.min(_reconnectAttempts - 1, 4), MAX_RECONNECT_DELAY)
+      if (reconnectTimer) clearTimeout(reconnectTimer)
+      reconnectTimer = setTimeout(() => { connect() }, delay)
     }
 
     socket.onerror = (err) => {
@@ -103,74 +153,75 @@ export function useSerial() {
     }
 
     ws.value = socket
+  })()
+}
+
+function disconnect() {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
   }
+  _reconnectAttempts = 0
+  ws.value?.close()
+  ws.value = null
+  isConnected.value = false
+}
 
-  function disconnect() {
-    if (reconnectTimer.value) {
-      clearTimeout(reconnectTimer.value)
-      reconnectTimer.value = null
-    }
-    ws.value?.close()
-    ws.value = null
-    isConnected.value = false
+function send(port: string, data: string, source: 'user' | 'ai' = 'user', newline: string = '\r\n') {
+  if (ws.value?.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ action: 'write', port, data, source, newline }))
   }
+}
 
-  function send(port: string, data: string, source: 'user' | 'ai' = 'user', newline: string = '\r\n') {
-    if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'write', port, data, source, newline }))
-    }
+function sendRaw(port: string, data: string) {
+  // 原始按键透传（交互模式），data 包含控制字符如 \r, \t, \x1b 等
+  if (ws.value?.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ action: 'raw_write', port, data }))
   }
+}
 
-  function sendRaw(port: string, data: string) {
-    // 原始按键透传（交互模式），data 包含控制字符如 \r, \t, \x1b 等
-    if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'raw_write', port, data }))
-    }
+function openPort(port: string, baudrate: number) {
+  if (ws.value?.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ action: 'open', port, baudrate }))
   }
+}
 
-  function openPort(port: string, baudrate: number) {
-    if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'open', port, baudrate }))
-    }
+function closePort(port: string) {
+  if (ws.value?.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ action: 'close', port }))
   }
+  // 本地清理
+  delete messages.value[port]
+  delete isSerialOpen.value[port]
+  delete portBaudrates.value[port]
+  const idx = openPorts.value.indexOf(port)
+  if (idx >= 0) openPorts.value.splice(idx, 1)
+  delete callbacks[port]
+}
 
-  function closePort(port: string) {
-    if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'close', port }))
-    }
-    // 本地清理
-    delete messages.value[port]
-    delete isSerialOpen.value[port]
-    const idx = openPorts.value.indexOf(port)
-    if (idx >= 0) openPorts.value.splice(idx, 1)
-    delete callbacks[port]
+function refreshPorts() {
+  if (ws.value?.readyState === WebSocket.OPEN) {
+    ws.value.send(JSON.stringify({ action: 'list_ports' }))
   }
+}
 
-  function refreshPorts() {
-    if (ws.value?.readyState === WebSocket.OPEN) {
-      ws.value.send(JSON.stringify({ action: 'list_ports' }))
-    }
-  }
+function onMessage(port: string, callback: (msg: SerialMessage) => void) {
+  ensureCallbacks(port)
+  callbacks[port].push(callback)
+}
 
-  function onMessage(port: string, callback: (msg: SerialMessage) => void) {
-    ensureCallbacks(port)
-    callbacks[port].push(callback)
-  }
+function offMessage(port: string, callback: (msg: SerialMessage) => void) {
+  ensureCallbacks(port)
+  const idx = callbacks[port].indexOf(callback)
+  if (idx >= 0) callbacks[port].splice(idx, 1)
+}
 
-  function offMessage(port: string, callback: (msg: SerialMessage) => void) {
-    ensureCallbacks(port)
-    const idx = callbacks[port].indexOf(callback)
-    if (idx >= 0) callbacks[port].splice(idx, 1)
-  }
+function getHistory(port: string, limit: number = 1000): SerialMessage[] {
+  const arr = messages.value[port] || []
+  return limit && limit > 0 ? arr.slice(-limit) : arr.slice()
+}
 
-  function getHistory(port: string, limit: number = 1000): SerialMessage[] {
-    return messages.value[port] || []
-  }
-
-  onUnmounted(() => {
-    disconnect()
-  })
-
+export function useSerial() {
   return {
     ws,
     isConnected,
@@ -178,6 +229,7 @@ export function useSerial() {
     openPorts,
     ports,
     messages,
+    portBaudrates,
     connect,
     disconnect,
     send,

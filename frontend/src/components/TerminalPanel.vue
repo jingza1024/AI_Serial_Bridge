@@ -1,11 +1,11 @@
 <script setup lang="ts">
 import { ref, onMounted, onUnmounted, watch } from 'vue'
-import { Terminal } from 'xterm'
-import { FitAddon } from 'xterm-addon-fit'
-import { WebLinksAddon } from 'xterm-addon-web-links'
+import { Terminal } from '@xterm/xterm'
+import { FitAddon } from '@xterm/addon-fit'
+import { WebLinksAddon } from '@xterm/addon-web-links'
 import { useSerial, type SerialMessage } from '../composables/useSerial'
 import { useLocale } from '../composables/useLocale'
-import 'xterm/css/xterm.css'
+import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps<{
   port: string
@@ -131,13 +131,22 @@ onMounted(() => {
   term.open(terminalRef.value)
   fitAddon.fit()
 
+  // 同步实际波特率（AI 经 MCP 打开时使用的波特率可能与本地默认不同）
+  if (serial.portBaudrates.value[props.port]) {
+    baudrate.value = serial.portBaudrates.value[props.port]
+  }
+  watch(() => serial.portBaudrates.value[props.port], (b) => {
+    if (b) baudrate.value = b
+  })
+
   term.write(`\x1b[90m--- ${props.port} ${t('terminal.ready')} ---\x1b[0m\r\n`)
   term.write(`\x1b[90m${t('terminal.waiting')}\x1b[0m\r\n`)
 
   // 命令模式下禁用终端输入，防止用户在终端上直接输入导致显示异常
   watch(interactiveMode, (val) => {
     if (term) {
-      term.options.disableStdin = !val
+      // xterm v6 推荐整体重设 options（避免直接修改返回的 options 对象）
+      term.options = { ...term.options, disableStdin: !val }
     }
   })
 
