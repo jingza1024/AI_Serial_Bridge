@@ -57,6 +57,7 @@ export default {
     hexViewTooltip: 'Show device data in hexadecimal',
     sendFile: 'Send File',
     receiveFile: 'Receive File',
+    receiveBatch: 'Receive Batch',
     sending: 'Sending {p}%',
     cancelSending: 'Cancel {p}%',
     exportLog: 'Export Log',
@@ -68,6 +69,17 @@ export default {
     writeAvailable: 'Write access available',
     leaseOwner: 'Writer: {owner}',
     writeLeaseRequired: 'Read-only observer. Acquire write access first.',
+  },
+  logs: {
+    open: 'Logs',
+    title: 'Session Logs',
+    port: 'Port',
+    refresh: 'Refresh',
+    encrypted: 'Encrypted at rest',
+    plaintext: 'Plaintext storage',
+    noSessions: 'No persistent log sessions found.',
+    noRecords: 'No records in this session.',
+    recordCount: '{count} records',
   },
   events: {
     port: {

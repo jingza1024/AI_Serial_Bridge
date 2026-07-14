@@ -10,6 +10,8 @@ import re
 import threading
 import time
 
+from cryptography.fernet import Fernet, InvalidToken
+
 from serial_manager import SerialMessage, SerialRawChunk
 
 
@@ -24,12 +26,21 @@ class SerialLogStore:
         backups: int = 5,
         queue_size: int = 5000,
         retention_days: int = 0,
+        encryption_key: str | bytes | None = None,
     ):
         default_root = Path.home() / ".ai-serial-bridge" / "logs"
         self.root = Path(root or os.environ.get("AI_SERIAL_LOG_DIR") or default_root)
         self.max_bytes = max(64 * 1024, int(max_bytes))
         self.backups = min(max(int(backups), 1), 20)
         self.retention_days = max(int(retention_days), 0)
+        key = encryption_key if encryption_key is not None else os.environ.get("AI_SERIAL_LOG_KEY", "")
+        self._fernet: Fernet | None = None
+        self._key_error = ""
+        if key:
+            try:
+                self._fernet = Fernet(key.encode("ascii") if isinstance(key, str) else key)
+            except (ValueError, UnicodeEncodeError) as exc:
+                self._key_error = f"invalid AI_SERIAL_LOG_KEY: {exc}"
         self._queue: queue.Queue[tuple[str, dict] | None] = queue.Queue(maxsize=queue_size)
         self._thread: threading.Thread | None = None
         self._running = threading.Event()
@@ -53,6 +64,10 @@ class SerialLogStore:
     def last_error(self) -> str:
         return self._last_error
 
+    @property
+    def encrypted(self) -> bool:
+        return self._fernet is not None
+
     @staticmethod
     def safe_port(port: str) -> str:
         value = _SAFE_PORT.sub("_", port.strip())[:128]
@@ -61,6 +76,10 @@ class SerialLogStore:
     def start(self) -> bool:
         if self._thread is not None and self._thread.is_alive():
             return True
+        if self._key_error:
+            self._available = False
+            self._last_error = self._key_error
+            return False
         try:
             self.root.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
@@ -149,8 +168,8 @@ class SerialLogStore:
     def _append(self, port: str, record: dict) -> None:
         with self._io_lock:
             path = self.root / f"{port}.jsonl"
-            line = json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n"
-            encoded = line.encode("utf-8")
+            payload = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            encoded = b"enc:v1:" + self._fernet.encrypt(payload) + b"\n" if self._fernet else payload + b"\n"
             if path.exists() and path.stat().st_size + len(encoded) > self.max_bytes:
                 self._rotate(path)
             with path.open("ab") as handle:
@@ -182,6 +201,37 @@ class SerialLogStore:
                 })
             return result
 
+    def _decode_line(self, line: bytes) -> dict | None:
+        payload = line.strip()
+        if not payload:
+            return None
+        if payload.startswith(b"enc:v1:"):
+            if self._fernet is None:
+                return None
+            try:
+                payload = self._fernet.decrypt(payload[7:])
+            except InvalidToken:
+                return None
+        try:
+            record = json.loads(payload)
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return None
+        return record if isinstance(record, dict) else None
+
+    def _records(self, port: str) -> list[dict]:
+        safe = self.safe_port(port)
+        paths = [self.root / f"{safe}.jsonl"]
+        paths.extend(self.root / f"{safe}.jsonl.{index}" for index in range(1, self.backups + 1))
+        records: list[dict] = []
+        for path in reversed(paths):
+            if not path.is_file():
+                continue
+            for line in path.read_bytes().splitlines():
+                record = self._decode_line(line)
+                if record is not None:
+                    records.append(record)
+        return records
+
     def query(
         self,
         port: str,
@@ -191,30 +241,23 @@ class SerialLogStore:
         session_id: str = "",
     ) -> list[dict]:
         with self._io_lock:
-            safe = self.safe_port(port)
-            paths = [self.root / f"{safe}.jsonl"]
-            paths.extend(self.root / f"{safe}.jsonl.{index}" for index in range(1, self.backups + 1))
             records: list[dict] = []
             needle = search.casefold()
-            for path in reversed(paths):
-                if not path.is_file():
+            for record in self._records(port):
+                if kind and record.get("kind") != kind:
                     continue
-                for line in path.read_text(encoding="utf-8", errors="replace").splitlines():
-                    try:
-                        record = json.loads(line)
-                    except json.JSONDecodeError:
+                if session_id and record.get("session_id") != session_id:
+                    continue
+                if needle:
+                    searchable = json.dumps(record, ensure_ascii=False, separators=(",", ":")).casefold()
+                    if needle not in searchable:
                         continue
-                    if kind and record.get("kind") != kind:
-                        continue
-                    if session_id and record.get("session_id") != session_id:
-                        continue
-                    if needle and needle not in line.casefold():
-                        continue
-                    records.append(record)
+                records.append(record)
             return records[-max(1, min(int(limit), 10000)):]
 
     def list_sessions(self, port: str) -> list[dict]:
-        records = self.query(port, limit=10000)
+        with self._io_lock:
+            records = self._records(port)
         sessions: dict[str, dict] = {}
         for record in records:
             session_id = record.get("session_id")
@@ -230,6 +273,17 @@ class SerialLogStore:
             session["ended_at"] = max(session["ended_at"], record.get("timestamp", 0))
             session["records"] += 1
         return sorted(sessions.values(), key=lambda item: item["started_at"], reverse=True)
+
+    def page_sessions(self, port: str, offset: int = 0, limit: int = 50) -> dict:
+        sessions = self.list_sessions(port)
+        safe_offset = max(int(offset), 0)
+        safe_limit = max(1, min(int(limit), 200))
+        return {
+            "items": sessions[safe_offset:safe_offset + safe_limit],
+            "total": len(sessions),
+            "offset": safe_offset,
+            "limit": safe_limit,
+        }
 
     def purge_older_than(self, days: int) -> int:
         cutoff = time.time() - max(int(days), 0) * 86400
@@ -260,4 +314,5 @@ serial_logs = SerialLogStore(
     max_bytes=int(os.environ.get("AI_SERIAL_LOG_MAX_BYTES", 10 * 1024 * 1024)),
     backups=int(os.environ.get("AI_SERIAL_LOG_BACKUPS", 5)),
     retention_days=int(os.environ.get("AI_SERIAL_LOG_RETENTION_DAYS", 0)),
+    encryption_key=os.environ.get("AI_SERIAL_LOG_KEY", ""),
 )

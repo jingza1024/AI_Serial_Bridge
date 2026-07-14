@@ -29,6 +29,7 @@ a = Analysis(
         'leases',
         'log_store',
         'transfers',
+        'cryptography.fernet',
         # uvicorn 运行时按需加载的子模块
         'uvicorn.logging',
         'uvicorn.loops',

@@ -7,9 +7,12 @@ AI Serial Bridge - FastAPI Backend
 import asyncio
 import base64
 import hmac
+import io
+import json
 import os
 import secrets
 import time
+import zipfile
 from contextlib import asynccontextmanager, suppress
 from typing import List, Literal
 
@@ -22,7 +25,13 @@ from pydantic import BaseModel, Field, ValidationError
 
 from leases import LeaseResult, PortLease, port_leases
 from log_store import serial_logs
-from transfers import TransferCancelled, TransferError, serial_transfers
+from transfers import (
+    DEFAULT_MAX_BATCH_FILES,
+    DEFAULT_MAX_BATCH_SIZE,
+    TransferCancelled,
+    TransferError,
+    serial_transfers,
+)
 from serial_manager import (
     serial_manager,
     MessageSource,
@@ -690,6 +699,7 @@ async def list_persistent_logs():
         "error": serial_logs.last_error,
         "ports": await asyncio.to_thread(serial_logs.list_ports),
         "dropped_records": serial_logs.dropped_records,
+        "encrypted": serial_logs.encrypted,
     }
 
 
@@ -707,6 +717,15 @@ async def query_persistent_logs(
 @app.get("/api/logs/{port}/sessions")
 async def list_log_sessions(port: str):
     return await asyncio.to_thread(serial_logs.list_sessions, port)
+
+
+@app.get("/api/logs/{port}/sessions-page")
+async def page_log_sessions(
+    port: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=200),
+):
+    return await asyncio.to_thread(serial_logs.page_sessions, port, offset, limit)
 
 
 @app.post("/api/logs/retention")
@@ -887,6 +906,100 @@ async def receive_protocol_file(
         headers={
             "X-AI-Serial-Filename": result.filename.encode("ascii", errors="replace").decode("ascii"),
             "X-AI-Serial-Protocol": result.protocol,
+            "X-AI-Serial-Blocks": str(result.blocks),
+            "X-AI-Serial-Retries": str(result.retries),
+        },
+    )
+
+
+@app.post("/api/transfer/receive-batch")
+async def receive_protocol_batch(
+    request: Request,
+    port: str,
+    transfer_id: str = Query(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+    timeout: float = Query(default=10.0, ge=0.2, le=60),
+    retries: int = Query(default=10, ge=1, le=50),
+):
+    client_id, client_label = _client_identity(request, "rest-client", "REST client")
+    lease = port_leases.ensure_writer(port, client_id, client_label, 300)
+    if not lease.acquired:
+        return _lease_conflict(port, lease)
+    loop = asyncio.get_running_loop()
+
+    def progress(received: int, total: int, block: int, retry_count: int) -> None:
+        port_leases.ensure_writer(port, client_id, client_label, 300)
+        payload = {
+            "transfer_id": transfer_id,
+            "port": port,
+            "protocol": "receive-ymodem-batch",
+            "sent": received,
+            "total": total,
+            "block": block,
+            "retries": retry_count,
+            "complete": False,
+        }
+        loop.call_soon_threadsafe(lambda: asyncio.create_task(broadcast_transfer(payload)))
+
+    try:
+        result = await asyncio.to_thread(
+            serial_transfers.receive_batch,
+            transfer_id,
+            port,
+            client_id,
+            timeout,
+            retries,
+            progress,
+            DEFAULT_MAX_BATCH_FILES,
+            MAX_FILE_SIZE,
+            DEFAULT_MAX_BATCH_SIZE,
+        )
+    except TransferCancelled as exc:
+        return JSONResponse({"detail": str(exc), "cancelled": True}, status_code=409)
+    except TransferError as exc:
+        return JSONResponse({"detail": str(exc)}, status_code=400)
+    finally:
+        port_leases.ensure_writer(port, client_id, client_label, DEFAULT_LEASE_TTL)
+        await broadcast_lease(port)
+
+    total_bytes = sum(len(file.data) for file in result.files)
+    manifest = {
+        "protocol": result.protocol,
+        "file_count": len(result.files),
+        "total_bytes": total_bytes,
+        "blocks": result.blocks,
+        "retries": result.retries,
+        "duration": result.duration,
+        "files": [
+            {"filename": file.filename, "size": len(file.data), "sha256": file.sha256}
+            for file in result.files
+        ],
+    }
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as bundle:
+        bundle.writestr("manifest.json", json.dumps(manifest, ensure_ascii=False, indent=2))
+        for file in result.files:
+            bundle.writestr(f"files/{file.filename}", file.data)
+
+    await broadcast_transfer({
+        "transfer_id": transfer_id,
+        "port": port,
+        "protocol": "receive-ymodem-batch",
+        "sent": total_bytes,
+        "total": total_bytes,
+        "blocks": result.blocks,
+        "retries": result.retries,
+        "files": len(result.files),
+        "complete": True,
+    })
+    archive_port = "".join(char if char.isalnum() or char in "-_" else "_" for char in port)[:64] or "serial"
+    return Response(
+        content=archive.getvalue(),
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="ymodem-{archive_port}-batch.zip"',
+            "X-AI-Serial-Protocol": result.protocol,
+            "X-AI-Serial-Files": str(len(result.files)),
+            "X-AI-Serial-Bytes": str(total_bytes),
             "X-AI-Serial-Blocks": str(result.blocks),
             "X-AI-Serial-Retries": str(result.retries),
         },

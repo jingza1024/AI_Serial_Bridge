@@ -93,7 +93,9 @@ Students learn embedded systems by talking to their Arduino or Micro:bit in natu
 - **Saved Serial Profiles**: Framing, flow-control, DTR, and RTS settings are remembered by hardware ID
 - **Automatic HWID Reconnect**: Named profiles reconnect with bounded backoff even if the COM number changes
 - **Protocol Receive**: Web UI and MCP receive XMODEM/YMODEM files with cancellation and device handshakes
-- **Log Sessions**: Persistent records include session IDs and optional age-based retention
+- **YMODEM Batch Receive**: Receive multiple files as a ZIP with a SHA-256 `manifest.json`; MCP verifies every file before writing
+- **Log Sessions**: Browse paginated persistent sessions and inspect their records from the Web UI
+- **Encrypted Logs**: Optional Fernet encryption protects new rotating log records at rest
 - **Lease-Aware Protection**: Prevents interleaved writes and exposes shared ports safely to read-only observers
 - **Service Manager**: One-command start/stop/restart for the entire stack (backend + frontend)
 
@@ -185,6 +187,19 @@ python manager.py start
 ```
 
 Pass the same environment variable to the MCP process. When binding beyond loopback, use a TLS reverse proxy and explicitly configure `CORS_ORIGINS`. See [SECURITY.md](SECURITY.md).
+
+### Optional Encrypted Logs
+
+Set a persistent Fernet key before starting the backend. Keep the key outside the repository and back it up; losing it makes encrypted records unreadable.
+
+```bash
+python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+# PowerShell
+$env:AI_SERIAL_LOG_KEY="paste-generated-key"
+python manager.py start
+```
+
+Encryption applies to newly written records. Existing plaintext logs remain readable and should be cleared or migrated according to your retention policy.
 
 ## MCP Configuration
 
@@ -543,6 +558,7 @@ Once MCP is configured, the AI automatically gains the following tools:
 | `serial_release_lease` | Release MCP write access | `port` (required) |
 | `serial_send_protocol_file` | Send a local file with XMODEM/YMODEM | `port`, `file_path`, optional protocol/timeouts |
 | `serial_receive_protocol_file` | Receive XMODEM/YMODEM to a local path | `port`, `output_path`, optional size/timeouts |
+| `serial_receive_ymodem_batch` | Receive a YMODEM batch, verify SHA-256, and write a manifest | `port`, `output_directory`, optional overwrite/timeouts |
 | `serial_cancel_transfer` | Cancel an active protocol transfer | `transfer_id` (required) |
 
 > **Note**: All operation tools (write/close/write_then_read) require a `port`. If only one port is open, the tool will auto-infer it. If multiple ports are open, you must explicitly pass the `port` parameter.
@@ -583,6 +599,8 @@ AI_Serial/
 │       ├── App.vue
 │       ├── components/
 │       │   ├── AuthDialog.vue
+│       │   ├── LogBrowserDialog.vue
+│       │   ├── LogSessionList.vue
 │       │   ├── PortDialog.vue
 │       │   ├── TerminalToolbar.vue
 │       │   └── TerminalPanel.vue

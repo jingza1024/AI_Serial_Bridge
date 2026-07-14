@@ -50,11 +50,15 @@ export interface FileTransferHandle {
 }
 
 export type TransferProtocol = 'raw' | 'xmodem' | 'xmodem1k' | 'ymodem'
+export type ProtocolTransferName = Exclude<TransferProtocol, 'raw'>
+  | 'receive-xmodem'
+  | 'receive-ymodem'
+  | 'receive-ymodem-batch'
 
 export interface ProtocolTransferState {
   transferId: string
   port: string
-  protocol: Exclude<TransferProtocol, 'raw'>
+  protocol: ProtocolTransferName
   sent: number
   total: number
   block: number
@@ -579,14 +583,7 @@ function receiveProtocolFile(
     }
     const data = await response.blob()
     const filename = response.headers.get('X-AI-Serial-Filename') || `${port}-${Date.now()}.${protocol}`
-    const url = URL.createObjectURL(data)
-    const link = document.createElement('a')
-    link.href = url
-    link.download = filename
-    document.body.appendChild(link)
-    link.click()
-    link.remove()
-    URL.revokeObjectURL(url)
+    downloadBlob(data, filename)
   }).finally(() => protocolProgressCallbacks.delete(transferId))
   return {
     promise,
@@ -598,6 +595,55 @@ function receiveProtocolFile(
       }).finally(() => controller.abort())
     },
   }
+}
+
+function receiveYmodemBatch(
+  port: string,
+  onProgress?: (received: number, total: number) => void,
+): FileTransferHandle {
+  const transferId = `web-rxb-${crypto.randomUUID().replaceAll('-', '')}`
+  const controller = new AbortController()
+  if (onProgress) protocolProgressCallbacks.set(transferId, onProgress)
+  const params = new URLSearchParams({ port, transfer_id: transferId })
+  const promise = fetch(`/api/transfer/receive-batch?${params}`, {
+    method: 'POST',
+    headers: {
+      'X-AI-Serial-Client': clientId.value,
+      'X-AI-Serial-Client-Label': 'Web UI',
+    },
+    signal: controller.signal,
+  }).then(async response => {
+    if (!response.ok) {
+      const body = await response.json().catch(() => ({})) as { detail?: string }
+      throw new Error(body.detail || `Batch receive failed: HTTP ${response.status}`)
+    }
+    const archive = await response.blob()
+    const disposition = response.headers.get('Content-Disposition') || ''
+    const headerFilename = disposition.match(/filename="?([^";]+)"?/i)?.[1]
+    const filename = headerFilename?.split(/[\\/]/).pop() || `ymodem-${port}-${Date.now()}-batch.zip`
+    downloadBlob(archive, filename)
+  }).finally(() => protocolProgressCallbacks.delete(transferId))
+  return {
+    promise,
+    cancel: () => {
+      const cancelParams = new URLSearchParams({ transfer_id: transferId })
+      void fetch(`/api/transfer/cancel?${cancelParams}`, {
+        method: 'POST',
+        headers: { 'X-AI-Serial-Client': clientId.value },
+      }).finally(() => controller.abort())
+    },
+  }
+}
+
+function downloadBlob(data: Blob, filename: string) {
+  const url = URL.createObjectURL(data)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = filename
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
+  URL.revokeObjectURL(url)
 }
 
 function openPort(port: string, settings: SerialSettings | number = defaultSerialSettings()) {
@@ -703,6 +749,7 @@ export function useSerial() {
     sendFile,
     sendProtocolFile,
     receiveProtocolFile,
+    receiveYmodemBatch,
     openPort,
     closePort,
     refreshPorts,

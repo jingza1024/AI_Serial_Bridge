@@ -1,7 +1,10 @@
 """FastAPI 接口测试：config、i18n 持久化、history 含 raw_hex、WS send_file。"""
 import base64
+import io
+import json
 import threading
 import time
+import zipfile
 
 import pytest
 from fastapi.testclient import TestClient
@@ -10,7 +13,7 @@ from starlette.websockets import WebSocketDisconnect
 import serial_manager as sm_mod
 import main
 from serial_manager import serial_manager
-from transfers import ActiveTransfer, ReceiveResult, TransferResult
+from transfers import ActiveTransfer, BatchFile, BatchReceiveResult, ReceiveResult, TransferResult
 from fakeserial import FakeSerial
 
 
@@ -220,6 +223,24 @@ def test_persistent_log_endpoints_do_not_disclose_storage_path(monkeypatch):
         assert c.delete("/api/logs/COM14").json()["removed_files"] == 2
 
 
+def test_log_session_page_endpoint_is_bounded(monkeypatch):
+    monkeypatch.setattr(main.serial_logs, "page_sessions", lambda port, offset, limit: {
+        "items": [{"session_id": "s2", "records": 4}],
+        "total": 3,
+        "offset": offset,
+        "limit": limit,
+    })
+    with TestClient(main.app) as c:
+        response = c.get("/api/logs/COM14/sessions-page", params={"offset": 1, "limit": 1})
+        assert response.status_code == 200
+        assert response.json() == {
+            "items": [{"session_id": "s2", "records": 4}],
+            "total": 3,
+            "offset": 1,
+            "limit": 1,
+        }
+
+
 def test_protocol_receive_endpoint_returns_exact_bytes(monkeypatch):
     monkeypatch.setattr(main.serial_transfers, "receive", lambda *args: ReceiveResult(
         "ymodem", b"DATA", "fw.bin", 1, 0, 0.1
@@ -233,6 +254,33 @@ def test_protocol_receive_endpoint_returns_exact_bytes(monkeypatch):
         assert response.status_code == 200
         assert response.content == b"DATA"
         assert response.headers["X-AI-Serial-Filename"] == "fw.bin"
+
+
+def test_protocol_batch_receive_returns_zip_manifest(monkeypatch):
+    monkeypatch.setattr(main.serial_transfers, "receive_batch", lambda *args: BatchReceiveResult(
+        "ymodem-batch",
+        (
+            BatchFile("a.bin", b"A", "559aead08264d5795d3909718cdd05abd49572e84fe55590eef31a88a08fdffd"),
+            BatchFile("b.bin", b"BC", "768921a22b8e190c2cfafeb068f0d6e700b5c00601e3b283e66dbf12e57c4096"),
+        ),
+        2,
+        0,
+        0.1,
+    ))
+    with TestClient(main.app) as c:
+        response = c.post(
+            "/api/transfer/receive-batch",
+            params={"port": "COM_BATCH", "transfer_id": "rx-batch-1"},
+            headers={"X-AI-Serial-Client": "receiver"},
+        )
+        assert response.status_code == 200
+        assert response.headers["X-AI-Serial-Files"] == "2"
+        with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
+            manifest = json.loads(bundle.read("manifest.json"))
+            assert manifest["file_count"] == 2
+            assert manifest["total_bytes"] == 3
+            assert bundle.read("files/a.bin") == b"A"
+            assert bundle.read("files/b.bin") == b"BC"
 
 
 def test_ws_send_file_writes_bytes():

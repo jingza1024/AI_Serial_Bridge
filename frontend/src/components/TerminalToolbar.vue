@@ -26,6 +26,7 @@ const emit = defineEmits<{
   clear: []
   file: []
   receive: []
+  receiveBatch: []
   export: []
   'update:interactiveMode': [value: boolean]
   'update:localEcho': [value: boolean]
@@ -135,6 +136,14 @@ const { t } = useLocale()
         @click="emit('receive')"
       >
         {{ t('terminal.receiveFile') }}
+      </button>
+      <button
+        v-if="props.fileProtocol === 'ymodem'"
+        class="btn btn-secondary"
+        :disabled="!props.isOpen || !props.canWrite"
+        @click="emit('receiveBatch')"
+      >
+        {{ t('terminal.receiveBatch') }}
       </button>
       <button class="btn btn-secondary" :disabled="!props.hasMessages" @click="emit('export')">
         {{ t('terminal.exportLog') }}

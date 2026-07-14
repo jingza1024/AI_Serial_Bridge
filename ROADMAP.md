@@ -21,11 +21,14 @@
 - Named profiles with opt-in HWID reconnect and bounded backoff
 - XMODEM/YMODEM receive with Web and MCP downloads
 - Log session queries and opt-in retention cleanup
+- Multi-file YMODEM batch receive with bounded ZIP archives and SHA-256 manifests
+- MCP batch extraction with path, size, overwrite, and hash verification
+- Optional Fernet-encrypted rotating logs
+- Paginated Web UI session log browser
 - Vitest coverage, Playwright E2E, and extracted xterm lifecycle
 
 ## Next Priorities
 
-1. Add multi-file YMODEM batch receive and transfer manifests with hashes.
-2. Add encrypted-at-rest logs and a paginated session browser.
-3. Add device health rules, command macros, and scheduled diagnostics.
-4. Expand E2E coverage to authenticated serial, lease, and transfer flows.
+1. Add device health rules, command macros, and scheduled diagnostics.
+2. Expand hardware-backed E2E coverage for authenticated serial, leases, and batch transfers.
+3. Add key rotation and migration tooling for encrypted persistent logs.

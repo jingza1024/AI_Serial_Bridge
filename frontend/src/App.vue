@@ -2,6 +2,7 @@
 import { computed, onUnmounted, ref, shallowRef, watch } from 'vue'
 import AuthDialog from './components/AuthDialog.vue'
 import PortDialog from './components/PortDialog.vue'
+import LogBrowserDialog from './components/LogBrowserDialog.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
 import { defaultSerialSettings, useSerial, type SerialSettings } from './composables/useSerial'
 import { useLocale } from './composables/useLocale'
@@ -20,6 +21,7 @@ const { t, locale } = useLocale()
 const tabs = ref<Tab[]>([])
 const activeTabId = shallowRef('')
 const showNewTabModal = shallowRef(false)
+const showLogBrowser = shallowRef(false)
 const selectedPort = shallowRef('')
 const selectedSettings = ref<SerialSettings>(defaultSerialSettings())
 const selectedProfileName = shallowRef('')
@@ -221,6 +223,7 @@ function authenticate(token: string) {
         <span class="ws-status" :class="{ active: serial.isConnected.value }">
           WS: {{ serial.isConnected.value ? t('app.wsConnected') : t('app.wsDisconnected') }}
         </span>
+        <button class="lang-btn" @click="showLogBrowser = true">{{ t('logs.open') }}</button>
         <button class="lang-btn" @click="locale = locale === 'zh' ? 'en' : 'zh'">
           {{ locale === 'zh' ? t('app.en') : t('app.zh') }}
         </button>
@@ -302,6 +305,7 @@ function authenticate(token: string) {
       @confirm="confirmNewTab"
       @cancel="cancelNewTab"
     />
+    <LogBrowserDialog :visible="showLogBrowser" @close="showLogBrowser = false" />
   </div>
 </template>
 

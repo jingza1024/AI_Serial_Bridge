@@ -6,7 +6,11 @@ Model Context Protocol server for AI Agent integration
 """
 
 import asyncio
+import hashlib
+import io
+import json
 import secrets
+import zipfile
 from pathlib import Path
 
 from mcp.server import Server
@@ -21,6 +25,9 @@ _AUTH_TOKEN = os.environ.get("AI_SERIAL_TOKEN", "").strip()
 _CLIENT_ID = os.environ.get("AI_SERIAL_CLIENT_ID", "").strip() or f"mcp-{secrets.token_urlsafe(12)}"
 _CLIENT_LABEL = os.environ.get("AI_SERIAL_CLIENT_LABEL", "MCP").strip()[:64] or "MCP"
 _LANG = os.environ.get("AI_SERIAL_LANG", "zh").lower()
+MAX_BATCH_FILES = 64
+MAX_FILE_SIZE = 32 * 1024 * 1024
+MAX_BATCH_SIZE = 64 * 1024 * 1024
 
 app = Server("ai-serial-bridge")
 
@@ -346,6 +353,21 @@ async def list_tools() -> list[Tool]:
             }
         ),
         Tool(
+            name="serial_receive_ymodem_batch",
+            description="使用 YMODEM 批量接收文件，校验 SHA-256 后保存到 MCP 主机目录",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "port": {"type": "string"},
+                    "output_directory": {"type": "string"},
+                    "overwrite": {"type": "boolean", "default": False},
+                    "timeout": {"type": "number", "minimum": 0.2, "maximum": 60, "default": 10},
+                    "retries": {"type": "integer", "minimum": 1, "maximum": 50, "default": 10}
+                },
+                "required": ["port", "output_directory"]
+            }
+        ),
+        Tool(
             name="serial_get_history",
             description="获取指定串口的通信历史记录",
             inputSchema={
@@ -574,6 +596,79 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(response.content)
             return [TextContent(type="text", text=f"✅ [{port}] 接收完成: {target} ({len(response.content)} bytes)")]
+
+        elif name == "serial_receive_ymodem_batch":
+            port = arguments.get("port", "")
+            output_value = str(arguments.get("output_directory", "")).strip()
+            if not port or not output_value:
+                return [TextContent(type="text", text="错误: 请指定 port 和 output_directory")]
+            output_directory = Path(output_value).expanduser().resolve()
+            if output_directory.exists() and not output_directory.is_dir():
+                return [TextContent(type="text", text=f"错误: 输出路径不是目录: {output_directory}")]
+
+            transfer_id = f"mcp-rxb-{secrets.token_urlsafe(10)}"
+            response = await api_receive_bytes("/api/transfer/receive-batch", params={
+                "port": port,
+                "transfer_id": transfer_id,
+                "timeout": min(max(float(arguments.get("timeout", 10)), 0.2), 60),
+                "retries": min(max(int(arguments.get("retries", 10)), 1), 50),
+            })
+            with zipfile.ZipFile(io.BytesIO(response.content)) as bundle:
+                manifest_info = bundle.getinfo("manifest.json")
+                if manifest_info.file_size > 1024 * 1024:
+                    raise ValueError("批次清单超过 1 MiB 限制")
+                manifest_bytes = bundle.read(manifest_info)
+                manifest = json.loads(manifest_bytes)
+                files = manifest.get("files", [])
+                if not isinstance(files, list) or len(files) > MAX_BATCH_FILES:
+                    raise ValueError("批次文件数量无效")
+
+                prepared: list[tuple[Path, bytes]] = []
+                filenames: set[str] = set()
+                total_size = 0
+                for item in files:
+                    filename = str(item.get("filename", ""))
+                    safe_name = Path(filename).name
+                    if not safe_name or safe_name in {".", ".."} or safe_name != filename:
+                        raise ValueError("批次清单包含不安全的文件名")
+                    filename_key = safe_name.casefold()
+                    if filename_key in filenames:
+                        raise ValueError("批次清单包含重复文件名")
+                    filenames.add(filename_key)
+                    target = (output_directory / safe_name).resolve()
+                    target.relative_to(output_directory)
+                    archive_name = f"files/{safe_name}"
+                    info = bundle.getinfo(archive_name)
+                    declared_size = int(item.get("size", -1))
+                    if declared_size < 0 or declared_size > MAX_FILE_SIZE or info.file_size != declared_size:
+                        raise ValueError(f"文件大小校验失败: {safe_name}")
+                    total_size += declared_size
+                    if total_size > MAX_BATCH_SIZE:
+                        raise ValueError("批次总大小超过 64 MiB 限制")
+                    data = bundle.read(info)
+                    if hashlib.sha256(data).hexdigest() != item.get("sha256"):
+                        raise ValueError(f"SHA-256 校验失败: {safe_name}")
+                    prepared.append((target, data))
+
+            manifest_target = (output_directory / "manifest.json").resolve()
+            manifest_target.relative_to(output_directory)
+            if not arguments.get("overwrite", False):
+                existing = [target for target, _ in prepared if target.exists()]
+                if manifest_target.exists():
+                    existing.append(manifest_target)
+                if existing:
+                    raise ValueError(f"目标已存在: {existing[0]}")
+            output_directory.mkdir(parents=True, exist_ok=True)
+            for target, data in prepared:
+                target.write_bytes(data)
+            manifest_target.write_bytes(manifest_bytes)
+            return [TextContent(
+                type="text",
+                text=(
+                    f"✅ [{port}] YMODEM 批量接收完成: {output_directory}，"
+                    f"{len(prepared)} files, {total_size} bytes，清单: {manifest_target}"
+                ),
+            )]
 
         elif name == "serial_get_history":
             port = arguments.get("port", "")

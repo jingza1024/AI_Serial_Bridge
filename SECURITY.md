@@ -18,7 +18,7 @@ Do not place tokens in query strings. For browser bootstrap, use the URL fragmen
 
 `manager.py stop` only terminates PIDs recorded by this repository and verified against their expected command. It does not kill arbitrary processes occupying ports 8000 or 5173.
 
-File transfers are limited to 32 MiB and 8 KiB server-side chunks. Each chunk requires a sequence number and acknowledgement. These controls reduce accidental flooding but are not a substitute for device-specific transfer protocols.
+File transfers are limited to 32 MiB per file and 8 KiB server-side chunks. YMODEM batches are limited to 64 files and 64 MiB total. Batch downloads contain SHA-256 hashes in `manifest.json`; the MCP tool validates names, sizes, paths, and hashes before writing. These controls reduce accidental flooding but are not a substitute for device-specific transfer protocols.
 
 Each open port has one renewable writer lease. Other Web UI or MCP clients remain read-only observers until the lease is released or expires. Clients must use a stable `X-AI-Serial-Client` identity; do not share one identity between unrelated processes to bypass lease conflicts.
 
@@ -26,6 +26,8 @@ Protocol transfers hold the port exclusively and reject normal writes until comp
 
 Persistent logs may contain credentials, console output, or proprietary device data. They default to `~/.ai-serial-bridge/logs`, rotate by size, and remain protected by the API authentication boundary. Set `AI_SERIAL_LOG_DIR`, `AI_SERIAL_LOG_MAX_BYTES`, and `AI_SERIAL_LOG_BACKUPS` to match local retention policy, and clear logs before sharing diagnostics.
 Set `AI_SERIAL_LOG_RETENTION_DAYS` to a positive value for startup cleanup; `0` preserves logs until explicitly removed.
+
+Set `AI_SERIAL_LOG_KEY` to a Fernet key to encrypt newly written records at rest. An invalid configured key disables persistent logging instead of falling back to plaintext. Store the key outside the repository with restricted permissions and a backup; key loss makes encrypted records unrecoverable. Enabling encryption does not retroactively encrypt existing plaintext files.
 
 ## Reporting
 

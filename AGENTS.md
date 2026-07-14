@@ -46,3 +46,4 @@ History follows Conventional Commits: `feat:`, `fix:`, `refactor:`, or `docs:`. 
 ## Security & Configuration
 
 Never commit tokens or machine-specific MCP paths. `/api/config` must not return secrets. Browsers use an HttpOnly session created from `AI_SERIAL_TOKEN`; MCP uses a Bearer credential. Keep origins narrow and require TLS beyond loopback.
+Treat `AI_SERIAL_LOG_KEY` as a secret; never print or commit it. Batch receive changes must preserve the 32 MiB/file, 64 MiB/batch, and basename-only extraction limits.

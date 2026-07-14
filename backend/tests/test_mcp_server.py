@@ -1,8 +1,12 @@
 """MCP 工具回归测试：用消息序号关联命令响应。"""
 
 import asyncio
+import hashlib
+import io
+import json
 from pathlib import Path
 import uuid
+import zipfile
 
 import mcp_server
 
@@ -141,3 +145,60 @@ def test_receive_protocol_file_writes_exact_bytes(monkeypatch):
         assert path.read_bytes() == b"received"
     finally:
         path.unlink(missing_ok=True)
+
+
+def test_receive_ymodem_batch_verifies_and_writes_files(monkeypatch):
+    files = {"a.bin": b"A", "b.bin": b"BC"}
+    manifest = {
+        "files": [
+            {"filename": name, "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            for name, data in files.items()
+        ]
+    }
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("manifest.json", json.dumps(manifest))
+        for name, data in files.items():
+            bundle.writestr(f"files/{name}", data)
+
+    async def fake_receive(endpoint, params=None):
+        assert endpoint == "/api/transfer/receive-batch"
+        assert params["port"] == "COM14"
+        return FakeResponse({}, content=archive.getvalue())
+
+    monkeypatch.setattr(mcp_server, "api_receive_bytes", fake_receive)
+    output_directory = Path.cwd() / ".test-artifacts" / f"batch-{uuid.uuid4().hex}"
+    try:
+        result = asyncio.run(mcp_server.call_tool("serial_receive_ymodem_batch", {
+            "port": "COM14",
+            "output_directory": str(output_directory),
+        }))
+        assert "批量接收完成" in result[0].text
+        assert (output_directory / "a.bin").read_bytes() == b"A"
+        assert (output_directory / "b.bin").read_bytes() == b"BC"
+        assert json.loads((output_directory / "manifest.json").read_text())["files"] == manifest["files"]
+    finally:
+        for name in (*files, "manifest.json"):
+            (output_directory / name).unlink(missing_ok=True)
+        if output_directory.exists():
+            output_directory.rmdir()
+
+
+def test_receive_ymodem_batch_rejects_hash_mismatch_before_writing(monkeypatch):
+    manifest = {"files": [{"filename": "fw.bin", "size": 4, "sha256": "0" * 64}]}
+    archive = io.BytesIO()
+    with zipfile.ZipFile(archive, "w") as bundle:
+        bundle.writestr("manifest.json", json.dumps(manifest))
+        bundle.writestr("files/fw.bin", b"DATA")
+
+    async def fake_receive(endpoint, params=None):
+        return FakeResponse({}, content=archive.getvalue())
+
+    monkeypatch.setattr(mcp_server, "api_receive_bytes", fake_receive)
+    output_directory = Path.cwd() / ".test-artifacts" / f"batch-{uuid.uuid4().hex}"
+    result = asyncio.run(mcp_server.call_tool("serial_receive_ymodem_batch", {
+        "port": "COM14",
+        "output_directory": str(output_directory),
+    }))
+    assert "SHA-256 校验失败" in result[0].text
+    assert not output_directory.exists()

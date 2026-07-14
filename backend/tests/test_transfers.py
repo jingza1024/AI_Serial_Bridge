@@ -15,6 +15,7 @@ from transfers import (
     XyModemSender,
     XyModemReceiver,
     TransferCancelled,
+    TransferError,
     crc16_xmodem,
 )
 
@@ -152,3 +153,56 @@ def test_ymodem_receiver_parses_filename_and_size():
     assert result.filename == "fw.bin"
     assert result.data == b"DATA"
     assert result.blocks == 1
+
+
+def test_ymodem_batch_receiver_returns_sha256_manifest():
+    incoming: queue.Queue[int] = queue.Queue()
+
+    def packet(block: int, payload: bytes):
+        crc = crc16_xmodem(payload)
+        return bytes((SOH, block, 0xFF - block)) + payload + bytes((crc >> 8, crc & 0xFF))
+
+    def metadata(name: str, size: int):
+        return f"{name}\0{size}\0".encode().ljust(128, b"\0")
+
+    stream = (
+        packet(0, metadata("a.bin", 1))
+        + packet(1, b"A".ljust(128, bytes((0x1A,))))
+        + bytes((EOT, EOT))
+        + packet(0, metadata("b.bin", 2))
+        + packet(1, b"BC".ljust(128, bytes((0x1A,))))
+        + bytes((EOT, EOT))
+        + packet(0, bytes(128))
+    )
+
+    def write(value: bytes):
+        if value == bytes((CRC_REQUEST,)):
+            for byte in stream:
+                incoming.put(byte)
+        return True
+
+    receiver = XyModemReceiver(write, lambda timeout: incoming.get_nowait() if not incoming.empty() else None, timeout=0.2)
+    result = receiver.receive_ymodem_batch()
+    assert [file.filename for file in result.files] == ["a.bin", "b.bin"]
+    assert [file.data for file in result.files] == [b"A", b"BC"]
+    assert all(len(file.sha256) == 64 for file in result.files)
+
+
+def test_ymodem_batch_receiver_sanitizes_filename_and_enforces_size_limit():
+    incoming: queue.Queue[int] = queue.Queue()
+
+    def packet(block: int, payload: bytes):
+        crc = crc16_xmodem(payload)
+        return bytes((SOH, block, 0xFF - block)) + payload + bytes((crc >> 8, crc & 0xFF))
+
+    stream = packet(0, b"../../fw.bin\0" + b"4\0" + bytes(113))
+
+    def write(value: bytes):
+        if value == bytes((CRC_REQUEST,)):
+            for byte in stream:
+                incoming.put(byte)
+        return True
+
+    receiver = XyModemReceiver(write, lambda timeout: incoming.get_nowait() if not incoming.empty() else None, timeout=0.2)
+    with pytest.raises(TransferError, match="file size limit"):
+        receiver.receive_ymodem_batch(max_file_size=3)

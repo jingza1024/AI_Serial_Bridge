@@ -57,6 +57,7 @@ export default {
     hexViewTooltip: '以十六进制显示设备数据',
     sendFile: '发送文件',
     receiveFile: '接收文件',
+    receiveBatch: '批量接收',
     sending: '发送中 {p}%',
     cancelSending: '取消发送 {p}%',
     exportLog: '导出日志',
@@ -68,6 +69,17 @@ export default {
     writeAvailable: '写权限空闲',
     leaseOwner: '写入者: {owner}',
     writeLeaseRequired: '当前为只读观察者，请先获取写权限',
+  },
+  logs: {
+    open: '日志',
+    title: '会话日志',
+    port: '串口',
+    refresh: '刷新',
+    encrypted: '已加密存储',
+    plaintext: '明文存储',
+    noSessions: '未找到持久化日志会话。',
+    noRecords: '该会话没有记录。',
+    recordCount: '{count} 条记录',
   },
   events: {
     port: {

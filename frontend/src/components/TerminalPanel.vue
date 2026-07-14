@@ -164,6 +164,24 @@ async function handleReceiveButton() {
   }
 }
 
+async function handleBatchReceiveButton() {
+  sendingFile.value = true
+  sendProgress.value = 0
+  const transfer = serial.receiveYmodemBatch(props.port, (received, total) => {
+    sendProgress.value = total > 0 ? Math.round((received / total) * 100) : 0
+  })
+  cancelFileTransfer = transfer.cancel
+  try {
+    await transfer.promise
+    sendProgress.value = 100
+  } catch (error) {
+    term?.write(`\r\n\x1b[31m[${t('terminal.system')}] ${error instanceof Error ? error.message : String(error)}\x1b[0m\r\n`)
+  } finally {
+    sendingFile.value = false
+    cancelFileTransfer = null
+  }
+}
+
 async function exportLog() {
   if (hexMode.value) {
     await serial.loadRawHistory(props.port, 10000)
@@ -272,6 +290,7 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
       @clear="clearTerminal"
       @file="handleFileButton"
       @receive="handleReceiveButton"
+      @receive-batch="handleBatchReceiveButton"
       @export="exportLog"
       @update:interactive-mode="interactiveMode = $event"
       @update:local-echo="localEcho = $event"
