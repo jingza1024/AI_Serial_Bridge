@@ -17,10 +17,9 @@ import serial.tools.list_ports
 import threading
 import time
 from typing import Callable, Optional, List, Dict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from collections import deque
-from locales import t
 
 
 class MessageSource(Enum):
@@ -30,12 +29,69 @@ class MessageSource(Enum):
     SYSTEM = "system"
 
 
+class SerialEventCode(str, Enum):
+    PORT_ALREADY_OPEN = "port.already_open"
+    PORT_OPENED = "port.opened"
+    PORT_OPEN_FAILED = "port.open_failed"
+    PORT_CLOSED = "port.closed"
+    PORT_CLOSE_FAILED = "port.close_failed"
+    PORT_NOT_OPEN = "port.not_open"
+    SEND_FAILED = "serial.send_failed"
+    READ_ERROR = "serial.read_error"
+
+
+@dataclass(frozen=True)
+class SerialSettings:
+    baudrate: int = 115200
+    bytesize: int = 8
+    parity: str = "N"
+    stopbits: float = 1
+    xonxoff: bool = False
+    rtscts: bool = False
+    dsrdtr: bool = False
+    dtr: Optional[bool] = None
+    rts: Optional[bool] = None
+
+    def to_dict(self) -> Dict:
+        return {
+            "baudrate": self.baudrate,
+            "bytesize": self.bytesize,
+            "parity": self.parity,
+            "stopbits": self.stopbits,
+            "xonxoff": self.xonxoff,
+            "rtscts": self.rtscts,
+            "dsrdtr": self.dsrdtr,
+            "dtr": self.dtr,
+            "rts": self.rts,
+        }
+
+
 @dataclass
 class SerialMessage:
     source: MessageSource
     content: str
     timestamp: float
     raw_bytes: Optional[bytes] = None
+    sequence: int = 0
+    event_code: Optional[str] = None
+    event_params: Dict = field(default_factory=dict)
+
+
+@dataclass
+class SerialRawChunk:
+    data: bytes
+    timestamp: float
+    sequence: int = 0
+
+
+def _system_event(code: SerialEventCode, **params) -> SerialMessage:
+    return SerialMessage(
+        source=MessageSource.SYSTEM,
+        content="",
+        timestamp=time.time(),
+        event_code=code.value,
+        event_params=params,
+    )
 
 
 def _list_serial_ports() -> List[Dict[str, str]]:
@@ -60,8 +116,15 @@ class SerialManager:
         self._read_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
         self._callbacks: List[Callable[[SerialMessage], None]] = []
+        self._raw_callbacks: List[Callable[[SerialRawChunk], None]] = []
         self._callbacks_lock = threading.Lock()
         self._history: deque = deque(maxlen=10000)
+        self._raw_history: deque = deque(maxlen=10000)
+        self._sequence = 0
+        self._raw_sequence = 0
+        self._failed = False
+        self.baudrate: Optional[int] = None
+        self.settings = SerialSettings()
 
     @staticmethod
     def list_ports() -> List[Dict[str, str]]:
@@ -70,18 +133,20 @@ class SerialManager:
 
     def is_open(self) -> bool:
         with self._lock:
-            return self._serial is not None and self._serial.is_open
+            return not self._failed and self._serial is not None and self._serial.is_open
 
     def open(self, port: str, baudrate: int = 115200,
              bytesize: int = 8, parity: str = "N", stopbits: int = 1,
-             timeout: float = 0.1) -> bool:
+             timeout: float = 0.1, write_timeout: float = 2.0,
+             xonxoff: bool = False, rtscts: bool = False,
+             dsrdtr: bool = False, dtr: Optional[bool] = None,
+             rts: Optional[bool] = None) -> bool:
         """打开串口（若已打开则先安全关闭再重开）。"""
         with self._lock:
             if self._serial is not None and self._serial.is_open:
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("port_already_open_close_first", port=self._serial.port),
-                    timestamp=time.time()
+                self._notify(_system_event(
+                    SerialEventCode.PORT_ALREADY_OPEN,
+                    port=self._serial.port,
                 ))
                 self._stop_and_close_locked()
 
@@ -92,24 +157,46 @@ class SerialManager:
                     bytesize=bytesize,
                     parity=parity,
                     stopbits=stopbits,
-                    timeout=timeout
+                    timeout=timeout,
+                    write_timeout=write_timeout,
+                    xonxoff=xonxoff,
+                    rtscts=rtscts,
+                    dsrdtr=dsrdtr,
                 )
+                if dtr is not None:
+                    self._serial.dtr = dtr
+                if rts is not None:
+                    self._serial.rts = rts
+                self.baudrate = baudrate
+                self.settings = SerialSettings(
+                    baudrate=baudrate,
+                    bytesize=bytesize,
+                    parity=parity,
+                    stopbits=stopbits,
+                    xonxoff=xonxoff,
+                    rtscts=rtscts,
+                    dsrdtr=dsrdtr,
+                    dtr=dtr,
+                    rts=rts,
+                )
+                self._failed = False
                 self._stop_event.clear()
                 self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
                 self._read_thread.start()
 
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("port_opened", port=port, baudrate=baudrate),
-                    timestamp=time.time()
+                self._notify(_system_event(
+                    SerialEventCode.PORT_OPENED,
+                    port=port,
+                    settings=self.settings.to_dict(),
                 ))
                 return True
             except Exception as e:
                 self._serial = None
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("port_open_failed", error=str(e)),
-                    timestamp=time.time()
+                self._failed = True
+                self._notify(_system_event(
+                    SerialEventCode.PORT_OPEN_FAILED,
+                    port=port,
+                    error=str(e),
                 ))
                 return False
 
@@ -135,19 +222,18 @@ class SerialManager:
                 with self._io_lock:
                     if self._serial.is_open:
                         self._serial.close()
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("port_closed", port=self._serial.port),
-                    timestamp=time.time()
+                self._notify(_system_event(
+                    SerialEventCode.PORT_CLOSED,
+                    port=self._serial.port,
                 ))
             except Exception as e:
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("port_close_failed", error=str(e)),
-                    timestamp=time.time()
+                self._notify(_system_event(
+                    SerialEventCode.PORT_CLOSE_FAILED,
+                    error=str(e),
                 ))
             finally:
                 self._serial = None
+        self._failed = False
         return True
 
     def write(self, data: str, source: MessageSource = MessageSource.USER,
@@ -159,11 +245,7 @@ class SerialManager:
         with self._lock:
             ser = self._serial
             if ser is None or not ser.is_open:
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("port_not_open"),
-                    timestamp=time.time()
-                ))
+                self._notify(_system_event(SerialEventCode.PORT_NOT_OPEN))
                 return False
 
             try:
@@ -185,23 +267,16 @@ class SerialManager:
                 ))
                 return True
             except Exception as e:
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("send_failed", error=str(e)),
-                    timestamp=time.time()
-                ))
+                self._notify(_system_event(SerialEventCode.SEND_FAILED, error=str(e)))
                 return False
 
-    def write_raw(self, data: bytes, source: MessageSource = MessageSource.USER) -> bool:
+    def write_raw(self, data: bytes, source: MessageSource = MessageSource.USER,
+                  record: bool = True) -> bool:
         """发送原始字节到串口"""
         with self._lock:
             ser = self._serial
             if ser is None or not ser.is_open:
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("port_not_open"),
-                    timestamp=time.time()
-                ))
+                self._notify(_system_event(SerialEventCode.PORT_NOT_OPEN))
                 return False
 
             try:
@@ -219,19 +294,16 @@ class SerialManager:
                 if source != MessageSource.DEVICE:
                     text = text.replace("\r", "").replace("\n", "")
 
-                self._notify(SerialMessage(
-                    source=source,
-                    content=text,
-                    timestamp=time.time(),
-                    raw_bytes=data
-                ))
+                if record:
+                    self._notify(SerialMessage(
+                        source=source,
+                        content=text,
+                        timestamp=time.time(),
+                        raw_bytes=data
+                    ))
                 return True
             except Exception as e:
-                self._notify(SerialMessage(
-                    source=MessageSource.SYSTEM,
-                    content=t("send_failed", error=str(e)),
-                    timestamp=time.time()
-                ))
+                self._notify(_system_event(SerialEventCode.SEND_FAILED, error=str(e)))
                 return False
 
     def register_callback(self, callback: Callable[[SerialMessage], None]):
@@ -245,11 +317,27 @@ class SerialManager:
             if callback in self._callbacks:
                 self._callbacks.remove(callback)
 
+    def register_raw_callback(self, callback: Callable[[SerialRawChunk], None]):
+        with self._callbacks_lock:
+            self._raw_callbacks.append(callback)
+
+    def unregister_raw_callback(self, callback: Callable[[SerialRawChunk], None]):
+        with self._callbacks_lock:
+            if callback in self._raw_callbacks:
+                self._raw_callbacks.remove(callback)
+
     def get_history(self, limit: int = 1000) -> List[SerialMessage]:
         """获取历史记录（最近 limit 条）"""
         with self._callbacks_lock:
             # deque 自带 maxlen 自动淘汰，直接取尾部即可
             snapshot = list(self._history)
+        if limit and limit > 0:
+            return snapshot[-limit:]
+        return snapshot
+
+    def get_raw_history(self, limit: int = 1000) -> List[SerialRawChunk]:
+        with self._callbacks_lock:
+            snapshot = list(self._raw_history)
         if limit and limit > 0:
             return snapshot[-limit:]
         return snapshot
@@ -263,6 +351,7 @@ class SerialManager:
         buffer = bytearray()
         last_recv_time = 0.0
         LINE_TIMEOUT = 0.05  # 50ms 无新数据则发送缓冲区内容
+        MAX_BUFFER = 64 * 1024
 
         while not self._stop_event.is_set():
             try:
@@ -280,10 +369,15 @@ class SerialManager:
                             break
                         chunk = ser.read(min(available, 4096))
                     if chunk:
+                        self._notify_raw(chunk)
                         buffer.extend(chunk)
                         last_recv_time = time.time()
                         # _drain_lines 通过 del 原地消费 buffer 中已完整的行
                         self._drain_lines(buffer)
+                        if len(buffer) >= MAX_BUFFER:
+                            self._flush_partial(buffer)
+                            buffer.clear()
+                            last_recv_time = 0.0
                 else:
                     # 检查缓冲区超时（设备输出不以换行结束的情况）
                     if buffer and last_recv_time > 0:
@@ -296,13 +390,12 @@ class SerialManager:
                         break
             except Exception as e:
                 if not self._stop_event.is_set():
-                    self._notify(SerialMessage(
-                        source=MessageSource.SYSTEM,
-                        content=t("read_error", error=str(e)),
-                        timestamp=time.time()
+                    self._failed = True
+                    self._notify(_system_event(
+                        SerialEventCode.READ_ERROR,
+                        error=str(e),
                     ))
-                if self._stop_event.wait(0.05):
-                    break
+                break
 
         # 退出前冲刷残余缓冲
         if buffer:
@@ -340,18 +433,49 @@ class SerialManager:
             lines.append(line_bytes)
         return lines
 
+    def _split_frames(self, buffer: bytearray):
+        """切出包含原始换行符的完整帧，用于保真 raw_bytes。"""
+        frames = []
+        while True:
+            crlf = buffer.find(b'\r\n')
+            lf = buffer.find(b'\n')
+            cr = buffer.find(b'\r')
+            candidates = []
+            if crlf >= 0:
+                candidates.append((crlf, 2))
+            if lf >= 0 and not (crlf >= 0 and lf == crlf + 1):
+                candidates.append((lf, 1))
+            if cr >= 0 and not (crlf >= 0 and cr == crlf):
+                candidates.append((cr, 1))
+            if not candidates:
+                break
+            idx, newline_len = min(candidates)
+            end = idx + newline_len
+            frames.append(bytes(buffer[:end]))
+            del buffer[:end]
+        return frames
+
+    @staticmethod
+    def _frame_parts(frame: bytes) -> tuple[bytes, bytes]:
+        if frame.endswith(b'\r\n'):
+            return frame[:-2], b'\r\n'
+        if frame.endswith(b'\r') or frame.endswith(b'\n'):
+            return frame[:-1], frame[-1:]
+        return frame, b''
+
     def _drain_lines(self, buffer: bytearray):
         """把 buffer 中已有的完整行解码并 notify"""
-        for line_bytes in self._split_lines(buffer):
+        for frame in self._split_frames(buffer):
+            line_bytes, delimiter = self._frame_parts(frame)
             try:
                 text = line_bytes.decode("utf-8")
             except UnicodeDecodeError:
                 text = line_bytes.hex()
             self._notify(SerialMessage(
                 source=MessageSource.DEVICE,
-                content=text + "\r\n",
+                content=text + delimiter.decode("ascii"),
                 timestamp=time.time(),
-                raw_bytes=line_bytes
+                raw_bytes=frame,
             ))
 
     def _flush_partial(self, buffer: bytearray):
@@ -372,11 +496,26 @@ class SerialManager:
     def _notify(self, message: SerialMessage):
         """保存历史并通知所有回调（线程安全）"""
         with self._callbacks_lock:
+            self._sequence += 1
+            message.sequence = self._sequence
             self._history.append(message)
             callbacks = list(self._callbacks)
         for cb in callbacks:
             try:
                 cb(message)
+            except Exception:
+                pass
+
+    def _notify_raw(self, data: bytes):
+        chunk = SerialRawChunk(data=data, timestamp=time.time())
+        with self._callbacks_lock:
+            self._raw_sequence += 1
+            chunk.sequence = self._raw_sequence
+            self._raw_history.append(chunk)
+            callbacks = list(self._raw_callbacks)
+        for callback in callbacks:
+            try:
+                callback(chunk)
             except Exception:
                 pass
 
@@ -389,6 +528,7 @@ class SerialPortManager:
         self._ports: Dict[str, SerialManager] = {}
         self._lock = threading.Lock()
         self._callbacks: List[Callable[[str, SerialMessage], None]] = []
+        self._raw_callbacks: List[Callable[[str, SerialRawChunk], None]] = []
         self._callbacks_lock = threading.Lock()
 
     def list_ports(self) -> List[Dict[str, str]]:
@@ -404,7 +544,12 @@ class SerialPortManager:
         with self._lock:
             result = []
             for p, sm in self._ports.items():
-                result.append({"port": p, "baudrate": sm.baudrate})
+                if sm.is_open():
+                    result.append({
+                        "port": p,
+                        "baudrate": sm.baudrate,
+                        "settings": sm.settings.to_dict(),
+                    })
             return result
 
     def is_open(self, port: str) -> bool:
@@ -413,35 +558,46 @@ class SerialPortManager:
                 return False
             return self._ports[port].is_open()
 
-    def open(self, port: str, baudrate: int = 115200) -> bool:
+    def open(self, port: str, baudrate: int = 115200, **settings) -> bool:
         """打开指定串口"""
         with self._lock:
             if port in self._ports and self._ports[port].is_open():
                 # 已经打开，直接返回成功
                 return True
+            stale = self._ports.pop(port, None)
 
-            sm = SerialManager()
-            sm.baudrate = baudrate  # 记录波特率供 detail 查询
-            # 包装回调，带上 port 信息
-            def make_callback(port_name: str):
-                def callback(msg: SerialMessage):
-                    with self._callbacks_lock:
-                        cbs = list(self._callbacks)
-                    for cb in cbs:
-                        try:
-                            cb(port_name, msg)
-                        except Exception:
-                            pass
-                return callback
-            sm.register_callback(make_callback(port))
+        if stale is not None:
+            stale.close()
 
-            ok = sm.open(port, baudrate)
-            if ok:
+        sm = SerialManager()
+        # 包装回调，带上 port 信息
+        def make_callback(port_name: str):
+            def callback(msg: SerialMessage):
+                with self._callbacks_lock:
+                    cbs = list(self._callbacks)
+                for cb in cbs:
+                    try:
+                        cb(port_name, msg)
+                    except Exception:
+                        pass
+            return callback
+        sm.register_callback(make_callback(port))
+
+        def raw_callback(chunk: SerialRawChunk):
+            with self._callbacks_lock:
+                callbacks = list(self._raw_callbacks)
+            for callback in callbacks:
+                try:
+                    callback(port, chunk)
+                except Exception:
+                    pass
+        sm.register_raw_callback(raw_callback)
+
+        ok = sm.open(port, baudrate, **settings)
+        if ok:
+            with self._lock:
                 self._ports[port] = sm
-            else:
-                # 打开失败则记录的 baudrate 无意义
-                sm.baudrate = None
-            return ok
+        return ok
 
     def close(self, port: str) -> bool:
         """关闭指定串口"""
@@ -461,13 +617,14 @@ class SerialPortManager:
             sm = self._ports[port]
         return sm.write(data, source, encoding, newline)
 
-    def write_raw(self, port: str, data: bytes, source: MessageSource = MessageSource.USER) -> bool:
+    def write_raw(self, port: str, data: bytes, source: MessageSource = MessageSource.USER,
+                  record: bool = True) -> bool:
         """向指定串口发送原始字节"""
         with self._lock:
             if port not in self._ports:
                 return False
             sm = self._ports[port]
-        return sm.write_raw(data, source)
+        return sm.write_raw(data, source, record)
 
     def get_history(self, port: str, limit: int = 1000) -> List[SerialMessage]:
         """获取指定串口的历史记录"""
@@ -476,6 +633,13 @@ class SerialPortManager:
                 return []
             sm = self._ports[port]
         return sm.get_history(limit)
+
+    def get_raw_history(self, port: str, limit: int = 1000) -> List[SerialRawChunk]:
+        with self._lock:
+            if port not in self._ports:
+                return []
+            sm = self._ports[port]
+        return sm.get_raw_history(limit)
 
     def register_callback(self, callback: Callable[[str, SerialMessage], None]):
         """注册数据接收回调，参数: (port, message)"""
@@ -486,6 +650,15 @@ class SerialPortManager:
         with self._callbacks_lock:
             if callback in self._callbacks:
                 self._callbacks.remove(callback)
+
+    def register_raw_callback(self, callback: Callable[[str, SerialRawChunk], None]):
+        with self._callbacks_lock:
+            self._raw_callbacks.append(callback)
+
+    def unregister_raw_callback(self, callback: Callable[[str, SerialRawChunk], None]):
+        with self._callbacks_lock:
+            if callback in self._raw_callbacks:
+                self._raw_callbacks.remove(callback)
 
 
 serial_manager = SerialPortManager()

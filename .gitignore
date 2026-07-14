@@ -21,3 +21,8 @@ dist-ssr/
 .vscode/*
 !.vscode/extensions.json
 .idea/
+.claude/
+.test-artifacts/
+.test-tmp/
+frontend/test-results/
+frontend/playwright-report/

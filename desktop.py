@@ -5,16 +5,21 @@ AI Serial Bridge - Desktop Application
 
 import sys
 import os
+import secrets
 import threading
 import socket
 import time
+from urllib.parse import quote
 
 
 def _get_base_dir():
-    """获取基础目录，兼容开发模式和 PyInstaller 打包模式"""
+    """获取资源基础目录，兼容开发模式与 PyInstaller 打包模式。
+
+    打包后前端 dist 与后端模块都位于 PyInstaller 的解包目录 sys._MEIPASS 下。
+    """
     if getattr(sys, 'frozen', False):
-        # PyInstaller 打包后
-        return os.path.dirname(sys.executable)
+        # PyInstaller onedir/onefile 解包后的资源根目录
+        return getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
 
 
@@ -49,6 +54,7 @@ def _wait_for_server(host: str, port: int, timeout: float = 10.0) -> bool:
 
 def main():
     base_dir = _get_base_dir()
+    dist_dir = os.path.join(base_dir, 'frontend', 'dist')
 
     # 将 backend 目录加入 Python 路径
     backend_dir = os.path.join(base_dir, 'backend')
@@ -57,17 +63,29 @@ def main():
 
     port = _find_free_port(8000)
     host = '127.0.0.1'
+    if not os.path.isdir(dist_dir) and port != 8000:
+        print("ERROR: 开发模式要求端口 8000 可用，因为 Vite 代理固定连接该端口")
+        sys.exit(1)
 
     # 设置环境变量，让后端适配
+    auth_token = os.environ.get('AI_SERIAL_TOKEN', '').strip() or secrets.token_urlsafe(32)
+    os.environ['AI_SERIAL_TOKEN'] = auth_token
     os.environ['AI_SERIAL_PORT'] = str(port)
     os.environ['AI_SERIAL_HOST'] = host
     os.environ['AI_SERIAL_DESKTOP'] = '1'  # 标记：桌面模式
 
     # --- 在后台线程启动 FastAPI ---
+    import uvicorn
+    from main import app  # 路径与环境变量设置后再导入
+    server = uvicorn.Server(uvicorn.Config(
+        app,
+        host=host,
+        port=port,
+        log_level='warning',
+    ))
+
     def run_server():
-        import uvicorn
-        from main import app  # 路径设置后再导入
-        uvicorn.run(app, host=host, port=port, log_level='warning')
+        server.run()
 
     server_thread = threading.Thread(target=run_server, daemon=True)
     server_thread.start()
@@ -82,14 +100,13 @@ def main():
     # --- 打开 PyWebView 窗口 ---
     import webview
 
-    dist_dir = os.path.join(base_dir, 'frontend', 'dist')
     if os.path.isdir(dist_dir):
-        url = f'http://{host}:{port}/'
-        print(f"[AI Serial Bridge] 加载前端: {url}")
+        url = f'http://{host}:{port}/#token={quote(auth_token)}'
+        print(f"[AI Serial Bridge] 加载前端: http://{host}:{port}/")
     else:
         # 开发回退：指向 Vite 开发服务器
-        url = 'http://localhost:5173'
-        print(f"[AI Serial Bridge] 开发模式: {url}")
+        url = f'http://localhost:5173/#token={quote(auth_token)}'
+        print("[AI Serial Bridge] 开发模式: http://localhost:5173/")
 
     window = webview.create_window(
         title='AI Serial Bridge',
@@ -99,7 +116,10 @@ def main():
         min_size=(800, 600),
         text_select=True,
     )
+    window.events.closed += lambda: setattr(server, 'should_exit', True)
     webview.start(debug=False)
+    server.should_exit = True
+    server_thread.join(timeout=5)
 
 
 if __name__ == '__main__':

@@ -75,7 +75,9 @@ AI Serial Bridge 是一个基于 **Model Context Protocol (MCP)** 的桥接服�
 
 ## 功能
 
-- **AI 直接控制串口**：任何 MCP 兼容代理都可以通过 7 个标准化工具列出、打开、写入、读取和关闭串口
+- **AI 直接控制串口**：MCP 提供 13 个串口控制、租约、历史和协议传输工具
+- **单写者保护**：一个客户端持有可续期写租约，其他 Web UI 与 MCP 客户端保持只读观察
+- **无损 Hex 管线**：Hex 显示与导出使用精确原始接收块，完整保留 CR/LF 和任意二进制字节
 - **Web UI 终端**：基于 xterm.js，支持语法高亮、滚动回溯、完整 ANSI 转义序列
 - **交互模式**：点击终端直接输入——Tab 补全、方向键、Ctrl+C 中断，与 MobaXterm 体验一致
 - **命令模式**：底部输入栏，支持选择换行符模式（CR / LF / CRLF），适合脚本化操作
@@ -84,7 +86,15 @@ AI Serial Bridge 是一个基于 **Model Context Protocol (MCP)** 的桥接服�
 - **多标签多端口**：同时打开 COM3、COM4、COM5——每个端口独立终端会话
 - **AI 与 Web UI 自动同步**：AI 打开端口 → 浏览器出现标签页；你关闭标签 → AI 知道端口已释放
 - **通信历史**：每个端口的完整收发日志，标注来源（用户 / AI / 设备 / 系统）
-- **防呆保护**：防止重复打开同一端口；关闭标签自动释放串口资源
+- **安全浏览器会话**：可选主 token 只用于换取短期 HttpOnly 会话，并校验 WebSocket Origin
+- **带流控的文件发送**：二进制文件按块确认发送，支持进度显示与取消
+- **XMODEM/YMODEM 传输**：支持 CRC/校验和协商、ACK/NAK 重试、取消和设备确认完成
+- **持久轮转日志**：可搜索的 JSONL 文本/原始字节日志跨重启保留并按大小轮转
+- **串口参数档案**：按硬件 ID 记忆数据格式、流控、DTR 和 RTS
+- **HWID 自动重连**：命名档案可在 COM 号变化后按退避策略恢复连接
+- **协议接收**：Web UI 与 MCP 可接收 XMODEM/YMODEM 文件并支持取消
+- **日志会话**：持久记录包含会话 ID，并支持可选的按天保留策略
+- **租约防护**：阻止多个客户端交错写入，并允许其他客户端安全只读观察
 - **服务管理器**：一键启动/停止/重启整个技术栈（后端 + 前端）
 
 ## 截图
@@ -139,6 +149,9 @@ python manager.py restart
 cd backend
 pip install -r requirements.txt
 
+# MCP 代理（配置 AI Agent 时需要）
+pip install -r requirements-mcp.txt
+
 # Node 前端
 cd ../frontend
 npm install
@@ -161,6 +174,18 @@ npm run dev
 ```
 
 访问: http://localhost:5173
+
+### 可选鉴权
+
+启动后端前设置 `AI_SERIAL_TOKEN`。Web UI 首次连接时会要求输入该 token，并换取 HttpOnly 浏览器会话；`/api/config` 不会返回主 token。
+
+```bash
+# PowerShell
+$env:AI_SERIAL_TOKEN="replace-with-a-random-secret"
+python manager.py start
+```
+
+MCP 进程需要设置相同环境变量。若服务监听回环地址以外的接口，请使用 TLS 反向代理并显式配置 `CORS_ORIGINS`。详见 [SECURITY.md](SECURITY.md)。
 
 ## MCP 配置
 
@@ -436,19 +461,25 @@ mcpServers:
 
 配置文件: `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`)
 
-> Codex 使用 TOML 格式，Windows 上建议通过 WSL2 运行。
+> Codex 使用 TOML 格式。后端启用鉴权时，MCP 进程必须配置相同 token。
 
 ```toml
 [mcp_servers.ai-serial-bridge]
 command = "python"
 args = ["<YOUR_PROJECT_PATH>/backend/mcp_server.py"]
+
+[mcp_servers.ai-serial-bridge.env]
+AI_SERIAL_API_URL = "http://127.0.0.1:8000"
+AI_SERIAL_TOKEN = "<YOUR_AI_SERIAL_TOKEN>"
 ```
 
 或通过 CLI 添加:
 
 ```bash
-codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
+codex mcp add ai-serial-bridge --env AI_SERIAL_API_URL=http://127.0.0.1:8000 --env AI_SERIAL_TOKEN=<YOUR_AI_SERIAL_TOKEN> -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
 ```
+
+修改 MCP 配置后需重启 Codex 或新建任务。可运行 `python scripts/smoke_test_mcp.py` 验证 stdio 初始化与后端连通性。真实 Linux 控制台验证可设置 `AI_SERIAL_TEST_PORT` 后运行 `python scripts/test_linux_serial_mcp.py`；脚本只发送 `printf` 和 `uname`，校验返回后关闭端口。使用 com0com 配对时，可运行 `python scripts/test_xmodem_mcp_loopback.py` 验证完整协议链路。
 
 参考: https://developers.openai.com/codex/mcp
 
@@ -483,7 +514,7 @@ codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.
 ### Web UI 操作
 
 1. 打开浏览器访问 http://localhost:5173
-2. 点击 **+** 选择串口设备和波特率，点击「打开串口」
+2. 点击 **+** 设置串口、数据格式、流控、DTR 和 RTS，点击「打开串口」
 3. **交互模式**（默认）：直接在黑色终端区域点击并输入，像 MobaXterm 一样使用
    - Enter 发送命令
    - Tab 自动补全
@@ -491,8 +522,9 @@ codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.
    - Ctrl+C 中断当前程序
 4. **命令模式**：在底部输入框输入命令发送，可选择换行符模式（CR / LF / CRLF）
 5. 观察终端中设备的返回数据
-6. 点击标签页上的 **x** 关闭串口并释放资源
-7. 点击 header 右上角的 **EN** 按钮可在中英文界面之间切换
+6. 发送文件前选择 **RAW**、**XMODEM**、**XMODEM-1K** 或 **YMODEM**，并先让设备进入对应接收模式
+7. 点击标签页上的 **x** 关闭串口并释放资源
+8. 点击 header 右上角的 **EN** 按钮可在中英文界面之间切换
 
 ### AI Agent 操作
 
@@ -501,12 +533,18 @@ codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.
 | 工具 | 说明 | 参数 |
 |------|------|------|
 | `serial_list_ports` | 列出可用串口 | 无 |
-| `serial_open` | 打开指定串口 | `port`(必填), `baudrate` |
+| `serial_open` | 使用完整串口参数打开 | `port`(必填)，波特率/数据格式/流控/DTR/RTS |
 | `serial_close` | 关闭指定串口 | `port`(单端口时可省略) |
 | `serial_write` | 发送数据到串口 | `data`(必填), `port`(单端口时可省略), `newline` |
 | `serial_write_then_read` | 发送并等待响应 | `data`(必填), `port`(单端口时可省略), `wait_time` |
 | `serial_get_history` | 获取通信历史 | `port`(必填), `limit` |
 | `serial_is_open` | 检查串口是否已打开 | `port`(必填) |
+| `serial_get_lease` | 查看当前写入者 | `port`(必填) |
+| `serial_acquire_lease` | 获取或续期写权限 | `port`(必填), `ttl` |
+| `serial_release_lease` | 释放 MCP 写权限 | `port`(必填) |
+| `serial_send_protocol_file` | 使用 XMODEM/YMODEM 发送本地文件 | `port`, `file_path`，可选协议/超时 |
+| `serial_receive_protocol_file` | 接收 XMODEM/YMODEM 到本地路径 | `port`, `output_path`，可选大小/超时 |
+| `serial_cancel_transfer` | 取消协议传输 | `transfer_id`(必填) |
 
 > **注意**: 所有涉及操作的工具（write/close/write_then_read）都需要指定 `port`。如果只打开了一个串口，工具会自动推断，无需手动指定。如果同时打开了多个串口，必须明确传入 `port` 参数。
 
@@ -535,12 +573,19 @@ AI_Serial/
 │   ├── main.py             # FastAPI + WebSocket 服务
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP 代理)
 │   ├── serial_manager.py   # 多串口管理器
-│   ├── locales.py          # 后端国际化 (zh/en)
-│   └── requirements.txt
+│   ├── leases.py           # 单写者端口租约
+│   ├── log_store.py        # 轮转持久 JSONL 日志
+│   ├── transfers.py        # XMODEM/YMODEM 状态机
+│   ├── requirements.txt    # 后端核心运行依赖
+│   ├── requirements-mcp.txt
+│   └── requirements-desktop.txt
 ├── frontend/
 │   └── src/
 │       ├── App.vue
 │       ├── components/
+│       │   ├── AuthDialog.vue
+│       │   ├── PortDialog.vue
+│       │   ├── TerminalToolbar.vue
 │       │   └── TerminalPanel.vue
 │       ├── composables/
 │       │   ├── useSerial.ts
@@ -569,6 +614,8 @@ AI_Serial/
 │   │   ├── bug_report.md
 │   │   └── feature_request.md
 │   └── PULL_REQUEST_TEMPLATE.md
+├── SECURITY.md
+├── ROADMAP.md
 ├── CONTRIBUTING.md
 ├── LICENSE
 ├── README.md

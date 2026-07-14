@@ -1,23 +1,32 @@
 <script setup lang="ts">
-import { ref, computed, watch } from 'vue'
+import { computed, onUnmounted, ref, shallowRef, watch } from 'vue'
+import AuthDialog from './components/AuthDialog.vue'
+import PortDialog from './components/PortDialog.vue'
 import TerminalPanel from './components/TerminalPanel.vue'
-import { useSerial } from './composables/useSerial'
+import { defaultSerialSettings, useSerial, type SerialSettings } from './composables/useSerial'
 import { useLocale } from './composables/useLocale'
+import { createSerialProfiles } from './composables/useSerialProfiles'
 
 interface Tab {
   id: string
   port: string
   baudrate: number
+  settings: SerialSettings
   label: string
 }
 
 const serial = useSerial()
 const { t, locale } = useLocale()
 const tabs = ref<Tab[]>([])
-const activeTabId = ref<string>('')
-const showNewTabModal = ref(false)
-const selectedPort = ref('')
-const selectedBaudrate = ref(115200)
+const activeTabId = shallowRef('')
+const showNewTabModal = shallowRef(false)
+const selectedPort = shallowRef('')
+const selectedSettings = ref<SerialSettings>(defaultSerialSettings())
+const selectedProfileName = shallowRef('')
+const selectedAutoReconnect = shallowRef(false)
+const profileStore = createSerialProfiles(localStorage)
+const suppressedReconnect = new Set<string>()
+const reconnectSchedule = new Map<string, { attempts: number, nextAt: number }>()
 
 // 获取可用但尚未打开的串口（防呆）
 const availablePorts = computed(() => {
@@ -34,7 +43,7 @@ function generateId(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7)
 }
 
-function createTab(port: string, baudrate: number, shouldOpen: boolean = true) {
+function createTab(port: string, settings: SerialSettings, shouldOpen: boolean = true) {
   // 防呆：检查是否已存在该 port 的标签
   const existing = tabs.value.find(t => t.port === port)
   if (existing) {
@@ -45,7 +54,8 @@ function createTab(port: string, baudrate: number, shouldOpen: boolean = true) {
   const tab: Tab = {
     id: generateId(),
     port,
-    baudrate,
+    baudrate: settings.baudrate,
+    settings: { ...settings },
     label: port,
   }
   tabs.value.push(tab)
@@ -54,7 +64,7 @@ function createTab(port: string, baudrate: number, shouldOpen: boolean = true) {
   // 用户主动创建时才发 open 命令；WebSocket 同步时不重复 open
   if (shouldOpen) {
     setTimeout(() => {
-      serial.openPort(port, baudrate)
+      serial.openPort(port, settings)
     }, 100)
   }
 }
@@ -64,6 +74,8 @@ function closeTab(tabId: string) {
   if (idx < 0) return
 
   const tab = tabs.value[idx]
+  const profile = profileStore.findForPort(tab.port, serial.ports.value)
+  if (profile?.autoReconnect) suppressedReconnect.add(profile.id)
 
   // 关闭串口
   serial.closePort(tab.port)
@@ -83,24 +95,27 @@ function closeTab(tabId: string) {
 
 function openNewTabModal() {
   selectedPort.value = availablePorts.value.length > 0 ? availablePorts.value[0].device : ''
-  selectedBaudrate.value = 115200
+  loadSelectedProfile(selectedPort.value)
   showNewTabModal.value = true
 }
 
 function confirmNewTab() {
   if (!selectedPort.value) return
-  createTab(selectedPort.value, selectedBaudrate.value)
+  const profile = profileStore.saveForPort(
+    selectedPort.value,
+    serial.ports.value,
+    selectedProfileName.value,
+    selectedSettings.value,
+    selectedAutoReconnect.value,
+  )
+  suppressedReconnect.delete(profile.id)
+  createTab(selectedPort.value, selectedSettings.value)
   showNewTabModal.value = false
 }
 
 function cancelNewTab() {
   showNewTabModal.value = false
 }
-
-// 监听串口列表变化，刷新可用端口
-watch(() => serial.ports.value.length, () => {
-  // 自动刷新可用端口
-})
 
 // 关键：监听后端已打开的串口列表，自动同步标签页
 // AI 通过 MCP 打开/关闭串口后，WebSocket 会推送 open_ports 消息
@@ -111,7 +126,14 @@ watch(() => [...serial.openPorts.value], (newPorts) => {
   //    使用后端实际打开时使用的波特率，而非写死 115200
   for (const port of newPorts) {
     if (!tabPorts.has(port)) {
-      createTab(port, serial.portBaudrates.value[port] ?? 115200, false)
+      createTab(
+        port,
+        serial.portSettings.value[port] ?? {
+          ...defaultSerialSettings(),
+          baudrate: serial.portBaudrates.value[port] ?? 115200,
+        },
+        false,
+      )
     }
   }
 
@@ -131,10 +153,61 @@ watch(() => [...serial.openPorts.value], (newPorts) => {
 
 // 组件挂载时连接 WebSocket
 serial.connect()
+
+watch(selectedPort, port => {
+  if (showNewTabModal.value) loadSelectedProfile(port)
+})
+
+function loadSelectedProfile(port: string) {
+  const profile = port ? profileStore.findForPort(port, serial.ports.value) : undefined
+  selectedSettings.value = { ...(profile?.settings || defaultSerialSettings()) }
+  selectedProfileName.value = profile?.name || port
+  selectedAutoReconnect.value = profile?.autoReconnect || false
+}
+
+watch(
+  [() => serial.isConnected.value, () => [...serial.ports.value], () => [...serial.openPorts.value]],
+  ([connected]) => {
+    if (!connected) return
+    const now = Date.now()
+    for (const target of profileStore.autoReconnectTargets(serial.ports.value, serial.openPorts.value)) {
+      if (suppressedReconnect.has(target.profile.id)) continue
+      const state = reconnectSchedule.get(target.profile.id) || { attempts: 0, nextAt: 0 }
+      if (state.nextAt > now) continue
+      serial.openPort(target.port, target.profile.settings)
+      const attempts = state.attempts + 1
+      reconnectSchedule.set(target.profile.id, {
+        attempts,
+        nextAt: now + Math.min(1000 * 2 ** Math.min(attempts - 1, 4), 10000),
+      })
+    }
+    for (const port of serial.openPorts.value) {
+      const profile = profileStore.findForPort(port, serial.ports.value)
+      if (profile) reconnectSchedule.delete(profile.id)
+    }
+  },
+  { immediate: true },
+)
+
+const portRefreshTimer = setInterval(() => {
+  if (serial.isConnected.value) serial.refreshPorts()
+}, 3000)
+
+onUnmounted(() => clearInterval(portRefreshTimer))
+
+function authenticate(token: string) {
+  void serial.authenticate(token)
+}
 </script>
 
 <template>
   <div class="app">
+    <AuthDialog
+      :visible="serial.authRequired.value && !serial.authenticated.value"
+      :busy="serial.authBusy.value"
+      :error="serial.authError.value"
+      @submit="authenticate"
+    />
     <!-- 顶部栏 -->
     <header class="app-header">
       <div class="logo">
@@ -155,22 +228,29 @@ serial.connect()
     </header>
 
     <!-- 标签栏 -->
-    <div class="tab-bar">
+    <div class="tab-bar" role="tablist" :aria-label="t('app.serialTabs')">
       <div
         v-for="tab in tabs"
         :key="tab.id"
         class="tab"
         :class="{ active: activeTabId === tab.id }"
+        role="tab"
+        :aria-selected="activeTabId === tab.id"
+        :tabindex="activeTabId === tab.id ? 0 : -1"
         @click="activeTabId = tab.id"
+        @keydown.enter="activeTabId = tab.id"
+        @keydown.space.prevent="activeTabId = tab.id"
       >
         <span class="tab-label">{{ tab.label }}</span>
-        <span
+        <button
+          type="button"
           class="tab-close"
           @click.stop="closeTab(tab.id)"
           :title="t('app.closeTabTooltip')"
+          :aria-label="`${t('app.closeTabTooltip')}: ${tab.label}`"
         >
           x
-        </span>
+        </button>
       </div>
 
       <button
@@ -191,6 +271,7 @@ serial.connect()
           :key="tab.id"
           class="tab-panel"
           :class="{ hidden: activeTabId !== tab.id }"
+          role="tabpanel"
         >
           <TerminalPanel
             :port="tab.port"
@@ -210,60 +291,17 @@ serial.connect()
       </div>
     </main>
 
-    <!-- 新建标签弹窗 -->
-    <div v-if="showNewTabModal" class="modal-overlay" @click.self="cancelNewTab">
-      <div class="modal">
-        <div class="modal-header">
-          <h3>{{ t('app.newTabTitle') }}</h3>
-          <button class="modal-close" @click="cancelNewTab">&times;</button>
-        </div>
-        <div class="modal-body">
-          <div class="form-group">
-            <label>{{ t('app.port') }}</label>
-            <select v-model="selectedPort" class="select">
-              <option value="" disabled>{{ t('app.selectPort') }}</option>
-              <option
-                v-for="p in availablePorts"
-                :key="p.device"
-                :value="p.device"
-              >
-                {{ p.device }} {{ p.description ? `- ${p.description}` : '' }}
-              </option>
-            </select>
-            <p v-if="availablePorts.length === 0 && serial.ports.value.length > 0" class="form-hint warn">
-              {{ t('app.allPortsOpen') }}
-            </p>
-            <p v-else-if="serial.ports.value.length === 0" class="form-hint">
-              {{ t('app.noPortDetected') }}
-            </p>
-          </div>
-
-          <div class="form-group">
-            <label>{{ t('app.baudrate') }}</label>
-            <select v-model="selectedBaudrate" class="select">
-              <option :value="9600">9600</option>
-              <option :value="19200">19200</option>
-              <option :value="38400">38400</option>
-              <option :value="57600">57600</option>
-              <option :value="115200">115200</option>
-              <option :value="230400">230400</option>
-              <option :value="460800">460800</option>
-              <option :value="921600">921600</option>
-            </select>
-          </div>
-        </div>
-        <div class="modal-footer">
-          <button class="btn btn-secondary" @click="cancelNewTab">{{ t('app.cancel') }}</button>
-          <button
-            class="btn btn-primary"
-            :disabled="!selectedPort"
-            @click="confirmNewTab"
-          >
-            {{ t('app.openPort') }}
-          </button>
-        </div>
-      </div>
-    </div>
+    <PortDialog
+      v-model:port="selectedPort"
+      v-model:settings="selectedSettings"
+      v-model:profile-name="selectedProfileName"
+      v-model:auto-reconnect="selectedAutoReconnect"
+      :visible="showNewTabModal"
+      :ports="availablePorts"
+      :detected-count="serial.ports.value.length"
+      @confirm="confirmNewTab"
+      @cancel="cancelNewTab"
+    />
   </div>
 </template>
 
@@ -390,6 +428,8 @@ serial.connect()
   font-size: 12px;
   color: #8b949e;
   cursor: pointer;
+  border: 0;
+  background: transparent;
 }
 
 .tab-close:hover {
@@ -487,111 +527,4 @@ serial.connect()
   background-color: #30363d;
 }
 
-/* 弹窗 */
-.modal-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background-color: rgba(0, 0, 0, 0.6);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  z-index: 1000;
-}
-
-.modal {
-  background-color: #161b22;
-  border: 1px solid #30363d;
-  border-radius: 10px;
-  width: 420px;
-  max-width: 90vw;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-}
-
-.modal-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 16px 20px;
-  border-bottom: 1px solid #30363d;
-}
-
-.modal-header h3 {
-  font-size: 16px;
-  font-weight: 600;
-  color: #e6edf3;
-  margin: 0;
-}
-
-.modal-close {
-  background: none;
-  border: none;
-  color: #8b949e;
-  font-size: 22px;
-  cursor: pointer;
-  padding: 0;
-  width: 28px;
-  height: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-}
-
-.modal-close:hover {
-  background-color: #30363d;
-  color: #e6edf3;
-}
-
-.modal-body {
-  padding: 20px;
-  display: flex;
-  flex-direction: column;
-  gap: 16px;
-}
-
-.form-group {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.form-group label {
-  font-size: 13px;
-  color: #8b949e;
-}
-
-.select {
-  padding: 8px 12px;
-  background-color: #0d1117;
-  color: #c9d1d9;
-  border: 1px solid #30363d;
-  border-radius: 6px;
-  font-size: 14px;
-  outline: none;
-}
-
-.select:focus {
-  border-color: #58a6ff;
-}
-
-.form-hint {
-  font-size: 12px;
-  color: #8b949e;
-  margin: 0;
-}
-
-.form-hint.warn {
-  color: #f85149;
-}
-
-.modal-footer {
-  display: flex;
-  justify-content: flex-end;
-  gap: 10px;
-  padding: 12px 20px 16px;
-  border-top: 1px solid #30363d;
-}
 </style>
