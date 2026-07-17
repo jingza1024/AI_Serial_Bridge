@@ -4,3 +4,4 @@ pyserial>=3.5
 websockets>=13.0
 pydantic>=2.9.0
 cryptography>=44.0.0
+regex>=2024.11.6

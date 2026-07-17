@@ -81,6 +81,15 @@ export default {
     noRecords: '该会话没有记录。',
     recordCount: '{count} 条记录',
   },
+  automations: {
+    open: '自动化', title: '设备自动化', macros: '命令宏', health: '健康', schedules: '定时诊断',
+    port: '串口', runPort: '宏运行串口', id: '标识', name: '名称', enabled: '启用', edit: '编辑', delete: '删除',
+    run: '运行', cancel: '取消', save: '保存', refresh: '刷新', macroEditor: '命令宏编辑', ruleEditor: '健康规则编辑',
+    scheduleEditor: '诊断计划编辑', command: '命令', waitSeconds: '等待秒数', addStep: '新增步骤', stepCount: '{count} 个步骤',
+    noMacros: '尚未配置命令宏。', healthEvents: '健康事件', noHealthEvents: '暂无健康事件。', healthRules: '健康规则',
+    pattern: '匹配表达式', message: '事件消息', severity: '严重级别', cooldown: '冷却秒数', noSchedules: '尚未配置定时诊断。',
+    macro: '命令宏', selectMacro: '选择命令宏', interval: '间隔秒数', close: '关闭', loading: '加载中...',
+  },
   events: {
     port: {
       already_open: '串口已打开: {port}',

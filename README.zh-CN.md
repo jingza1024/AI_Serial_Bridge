@@ -95,6 +95,8 @@ AI Serial Bridge 是一个基于 **Model Context Protocol (MCP)** 的桥接服�
 - **协议接收**：Web UI 与 MCP 可接收 XMODEM/YMODEM 文件并支持取消
 - **日志会话**：持久记录包含会话 ID，并支持可选的按天保留策略
 - **租约防护**：阻止多个客户端交错写入，并允许其他客户端安全只读观察
+- **设备自动化**：通过 Web UI 或 MCP 配置有界命令宏、正则健康规则和遵守租约的定时诊断
+- **离线密钥轮换**：支持明文日志迁移、Fernet 密钥轮换、dry-run、原子替换、备份和回滚
 - **服务管理器**：一键启动/停止/重启整个技术栈（后端 + 前端）
 
 ## 截图
@@ -186,6 +188,21 @@ python manager.py start
 ```
 
 MCP 进程需要设置相同环境变量。若服务监听回环地址以外的接口，请使用 TLS 反向代理并显式配置 `CORS_ORIGINS`。详见 [SECURITY.md](SECURITY.md)。
+
+### 离线日志迁移与密钥轮换
+
+执行前先停止后端。目标密钥只放在 `AI_SERIAL_LOG_KEY`；轮换时将旧密钥放在 `AI_SERIAL_LOG_OLD_KEY`，先 dry-run 再执行：
+
+```bash
+python scripts/rotate_log_key.py --dry-run
+python scripts/rotate_log_key.py
+```
+
+CLI 不接受命令行密钥，也不会打印密钥。每个日志文件旁会保留迁移备份。附带的只读 Linux 实机检查命令为：
+
+```bash
+python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
+```
 
 ## MCP 配置
 

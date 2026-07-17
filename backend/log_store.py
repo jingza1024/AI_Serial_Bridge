@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 import queue
 import re
+import shutil
+import tempfile
 import threading
 import time
 
@@ -16,6 +18,157 @@ from serial_manager import SerialMessage, SerialRawChunk
 
 
 _SAFE_PORT = re.compile(r"[^A-Za-z0-9_.-]+")
+_LOG_FILE = re.compile(r".+\.jsonl(?:\.\d+)?$")
+_ENCRYPTION_PREFIX = b"enc:v1:"
+
+
+class LogMigrationError(RuntimeError):
+    """Raised when an offline log migration cannot complete safely."""
+
+
+def _create_fernet(key: str | bytes | None, name: str) -> Fernet | None:
+    if not key:
+        return None
+    try:
+        return Fernet(key.encode("ascii") if isinstance(key, str) else key)
+    except (ValueError, UnicodeEncodeError) as exc:
+        raise LogMigrationError(f"invalid {name}: {exc}") from exc
+
+
+def decode_log_line(line: bytes, decryptor: Fernet | None = None) -> dict:
+    """Decode one JSONL record and raise instead of silently dropping corruption."""
+    payload = line.strip()
+    if not payload:
+        raise LogMigrationError("empty log record")
+    if payload.startswith(_ENCRYPTION_PREFIX):
+        if decryptor is None:
+            raise LogMigrationError("cannot decrypt encrypted log record without the old key")
+        try:
+            payload = decryptor.decrypt(payload[len(_ENCRYPTION_PREFIX):])
+        except InvalidToken as exc:
+            raise LogMigrationError("cannot decrypt encrypted log record with the old key") from exc
+    try:
+        record = json.loads(payload)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise LogMigrationError(f"invalid JSON log record: {exc}") from exc
+    if not isinstance(record, dict):
+        raise LogMigrationError("log record must be a JSON object")
+    return record
+
+
+def encode_log_line(record: dict, encryptor: Fernet | None = None) -> bytes:
+    """Encode one validated log record in the store's canonical JSONL format."""
+    payload = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    if encryptor is not None:
+        payload = _ENCRYPTION_PREFIX + encryptor.encrypt(payload)
+    return payload + b"\n"
+
+
+def _migration_paths(root: Path) -> list[Path]:
+    if not root.exists():
+        return []
+    return sorted(path for path in root.iterdir() if path.is_file() and _LOG_FILE.fullmatch(path.name))
+
+
+def _backup_path(path: Path, stamp: str) -> Path:
+    candidate = path.with_name(f"{path.name}.migration-backup-{stamp}")
+    index = 1
+    while candidate.exists():
+        candidate = path.with_name(f"{path.name}.migration-backup-{stamp}-{index}")
+        index += 1
+    return candidate
+
+
+def migrate_log_directory(
+    root: Path | str,
+    *,
+    new_key: str | bytes,
+    old_key: str | bytes | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Encrypt plaintext logs or rotate encrypted logs without partial updates."""
+    directory = Path(root)
+    new_fernet = _create_fernet(new_key, "new log key")
+    if new_fernet is None:
+        raise LogMigrationError("new log key is required")
+    old_fernet = _create_fernet(old_key, "old log key")
+    paths = _migration_paths(directory)
+    staged: dict[Path, bytes] = {}
+    records = 0
+
+    for path in paths:
+        output = bytearray()
+        for line_number, line in enumerate(path.read_bytes().splitlines(), start=1):
+            try:
+                record = decode_log_line(line, old_fernet)
+            except LogMigrationError as exc:
+                raise LogMigrationError(f"{path.name}:{line_number}: {exc}") from exc
+            output.extend(encode_log_line(record, new_fernet))
+            records += 1
+        staged[path] = bytes(output)
+
+    result = {
+        "files": len(paths),
+        "records": records,
+        "changed_files": len(paths),
+        "dry_run": bool(dry_run),
+        "backups": [],
+    }
+    if dry_run or not paths:
+        return result
+
+    directory.mkdir(parents=True, exist_ok=True)
+    stamp = f"{time.time_ns()}-{os.getpid()}"
+    temporary: dict[Path, Path] = {}
+    backups: dict[Path, Path] = {}
+    replaced: list[Path] = []
+    try:
+        for path, payload in staged.items():
+            with tempfile.NamedTemporaryFile(
+                mode="wb",
+                prefix=f".{path.name}.migration-",
+                suffix=".tmp",
+                dir=path.parent,
+                delete=False,
+            ) as handle:
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+                temporary[path] = Path(handle.name)
+            os.chmod(temporary[path], path.stat().st_mode)
+
+        for path in paths:
+            backup = _backup_path(path, stamp)
+            shutil.copy2(path, backup)
+            backups[path] = backup
+
+        for path in paths:
+            os.replace(temporary[path], path)
+            replaced.append(path)
+    except OSError as exc:
+        rollback_errors: list[str] = []
+        for path in reversed(replaced):
+            backup = backups.get(path)
+            if backup is None:
+                continue
+            try:
+                os.replace(backup, path)
+            except OSError as rollback_exc:
+                rollback_errors.append(f"{path.name}: {rollback_exc}")
+        for path, backup in backups.items():
+            if path not in replaced and backup.exists():
+                backup.unlink()
+        detail = f"migration failed; changes were rolled back: {exc}"
+        if rollback_errors:
+            detail += f"; rollback errors: {'; '.join(rollback_errors)}"
+        raise LogMigrationError(detail) from exc
+    finally:
+        for path in temporary.values():
+            if path.exists():
+                path.unlink()
+
+    result["backups"] = [str(backups[path]) for path in paths]
+    return result
 
 
 class SerialLogStore:
@@ -168,8 +321,7 @@ class SerialLogStore:
     def _append(self, port: str, record: dict) -> None:
         with self._io_lock:
             path = self.root / f"{port}.jsonl"
-            payload = json.dumps(record, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-            encoded = b"enc:v1:" + self._fernet.encrypt(payload) + b"\n" if self._fernet else payload + b"\n"
+            encoded = encode_log_line(record, self._fernet)
             if path.exists() and path.stat().st_size + len(encoded) > self.max_bytes:
                 self._rotate(path)
             with path.open("ab") as handle:
@@ -202,21 +354,10 @@ class SerialLogStore:
             return result
 
     def _decode_line(self, line: bytes) -> dict | None:
-        payload = line.strip()
-        if not payload:
-            return None
-        if payload.startswith(b"enc:v1:"):
-            if self._fernet is None:
-                return None
-            try:
-                payload = self._fernet.decrypt(payload[7:])
-            except InvalidToken:
-                return None
         try:
-            record = json.loads(payload)
-        except (json.JSONDecodeError, UnicodeDecodeError):
+            return decode_log_line(line, self._fernet)
+        except LogMigrationError:
             return None
-        return record if isinstance(record, dict) else None
 
     def _records(self, port: str) -> list[dict]:
         safe = self.safe_port(port)

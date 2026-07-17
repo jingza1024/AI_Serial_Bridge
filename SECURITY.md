@@ -29,6 +29,10 @@ Set `AI_SERIAL_LOG_RETENTION_DAYS` to a positive value for startup cleanup; `0` 
 
 Set `AI_SERIAL_LOG_KEY` to a Fernet key to encrypt newly written records at rest. An invalid configured key disables persistent logging instead of falling back to plaintext. Store the key outside the repository with restricted permissions and a backup; key loss makes encrypted records unrecoverable. Enabling encryption does not retroactively encrypt existing plaintext files.
 
+To migrate existing plaintext logs or rotate a key, stop the backend and run `python scripts/rotate_log_key.py --dry-run` first. Set the destination key only in `AI_SERIAL_LOG_KEY`; for rotation, set the previous key in `AI_SERIAL_LOG_OLD_KEY`. The command validates every JSONL record before atomically replacing files, keeps migration backups, and rolls back replacements after an error. It never accepts or prints key material.
+
+The real-device smoke probe is intentionally bounded and read-only: `python scripts/test_hardware_automation.py --port COM17 --baudrate 115200` opens one lease, runs `uname -a`, verifies a health rule event, and releases the port. Review the target port before running it on any other device.
+
 ## Reporting
 
 Report vulnerabilities privately to the repository maintainers. Include affected versions, reproduction steps, expected impact, and suggested mitigations. Avoid attaching real tokens, device credentials, or sensitive serial logs.

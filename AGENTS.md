@@ -19,7 +19,9 @@ python manager.py status                # report managed service state
 python -m pytest backend/tests          # run backend regression tests
 python scripts/smoke_test_mcp.py        # verify MCP tools and connectivity
 python scripts/test_linux_serial_mcp.py # run a read-only Linux console probe
+python scripts/test_hardware_automation.py --port COM17 --baudrate 115200 # authenticated read-only automation probe
 python scripts/test_xmodem_mcp_loopback.py # verify MCP XMODEM over COM4/COM5
+python scripts/rotate_log_key.py --dry-run # validate offline log migration without writing
 cd frontend && npm run build            # type-check and build frontend/dist
 cd frontend && npm test                 # run Vitest tests
 cd frontend && npm run test:e2e         # run Playwright tests
@@ -47,3 +49,4 @@ History follows Conventional Commits: `feat:`, `fix:`, `refactor:`, or `docs:`. 
 
 Never commit tokens or machine-specific MCP paths. `/api/config` must not return secrets. Browsers use an HttpOnly session created from `AI_SERIAL_TOKEN`; MCP uses a Bearer credential. Keep origins narrow and require TLS beyond loopback.
 Treat `AI_SERIAL_LOG_KEY` as a secret; never print or commit it. Batch receive changes must preserve the 32 MiB/file, 64 MiB/batch, and basename-only extraction limits.
+For log migration, stop the backend first, set the destination key in `AI_SERIAL_LOG_KEY` and (for rotation) the source key in `AI_SERIAL_LOG_OLD_KEY`, then run the offline CLI. It creates migration backups and never accepts keys as command-line arguments.

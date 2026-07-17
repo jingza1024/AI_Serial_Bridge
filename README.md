@@ -96,6 +96,8 @@ Students learn embedded systems by talking to their Arduino or Micro:bit in natu
 - **YMODEM Batch Receive**: Receive multiple files as a ZIP with a SHA-256 `manifest.json`; MCP verifies every file before writing
 - **Log Sessions**: Browse paginated persistent sessions and inspect their records from the Web UI
 - **Encrypted Logs**: Optional Fernet encryption protects new rotating log records at rest
+- **Device Automations**: Configure bounded command macros, regex health rules, and lease-aware diagnostic schedules from the Web UI or MCP
+- **Offline Key Rotation**: Migrate plaintext logs or rotate Fernet keys with dry-run validation, atomic replacement, backups, and rollback
 - **Lease-Aware Protection**: Prevents interleaved writes and exposes shared ports safely to read-only observers
 - **Service Manager**: One-command start/stop/restart for the entire stack (backend + frontend)
 
@@ -200,6 +202,19 @@ python manager.py start
 ```
 
 Encryption applies to newly written records. Existing plaintext logs remain readable and should be cleared or migrated according to your retention policy.
+
+To migrate or rotate logs offline, stop the backend first. Put the destination key in `AI_SERIAL_LOG_KEY`; for rotation put the old key in `AI_SERIAL_LOG_OLD_KEY`, then validate and apply:
+
+```bash
+python scripts/rotate_log_key.py --dry-run
+python scripts/rotate_log_key.py
+```
+
+The CLI never accepts keys as arguments or prints them. It leaves migration backups beside each log file. The included read-only hardware check uses the attached Linux target as follows:
+
+```bash
+python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
+```
 
 ## MCP Configuration
 

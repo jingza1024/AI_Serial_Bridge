@@ -202,3 +202,87 @@ def test_receive_ymodem_batch_rejects_hash_mismatch_before_writing(monkeypatch):
     }))
     assert "SHA-256 校验失败" in result[0].text
     assert not output_directory.exists()
+
+
+def test_automation_tools_are_registered():
+    names = {tool.name for tool in asyncio.run(mcp_server.list_tools())}
+    assert {
+        "serial_list_macros",
+        "serial_run_macro",
+        "serial_cancel_macro",
+        "serial_get_health",
+        "serial_get_diagnostic_schedules",
+    }.issubset(names)
+
+
+def test_list_and_run_macro_tools_proxy_automation_api(monkeypatch):
+    calls = []
+
+    async def fake_get(path, params=None):
+        assert path == "/api/automations"
+        return FakeResponse({
+            "macros": [{"id": "linux-health", "name": "Linux health", "steps": [{"command": "uname -a"}]}],
+            "schedules": [],
+            "schedule_status": {},
+        })
+
+    async def fake_post_long(path, params=None):
+        calls.append((path, params))
+        return FakeResponse({
+            "run_id": params["run_id"],
+            "status": "completed",
+            "output": "Linux 5.4\n",
+            "steps_completed": 1,
+        })
+
+    monkeypatch.setattr(mcp_server, "api_get", fake_get)
+    monkeypatch.setattr(mcp_server, "api_post_long", fake_post_long)
+    listed = asyncio.run(mcp_server.call_tool("serial_list_macros", {}))
+    assert "linux-health" in listed[0].text
+    result = asyncio.run(mcp_server.call_tool("serial_run_macro", {
+        "port": "COM14",
+        "macro_id": "linux-health",
+        "run_id": "mcp-health-1",
+    }))
+    assert "Linux 5.4" in result[0].text
+    assert calls == [(
+        "/api/automations/macros/linux-health/run",
+        {"port": "COM14", "run_id": "mcp-health-1"},
+    )]
+
+
+def test_cancel_macro_tool_uses_caller_run_id(monkeypatch):
+    captured = []
+
+    async def fake_post(path, json_data=None, params=None):
+        captured.append(path)
+        return FakeResponse({"success": True, "run_id": "mcp-health-1"})
+
+    monkeypatch.setattr(mcp_server, "api_post", fake_post)
+    result = asyncio.run(mcp_server.call_tool("serial_cancel_macro", {"run_id": "mcp-health-1"}))
+    assert "mcp-health-1" in result[0].text
+    assert captured == ["/api/automations/runs/mcp-health-1/cancel"]
+
+
+def test_health_and_schedule_tools_format_status(monkeypatch):
+    async def fake_get(path, params=None):
+        if path == "/api/automations/health":
+            assert params == {"port": "COM14", "limit": 10}
+            return FakeResponse([{
+                "severity": "critical",
+                "message": "Kernel panic detected",
+                "content": "kernel panic",
+            }])
+        assert path == "/api/automations"
+        return FakeResponse({
+            "schedules": [{"id": "hourly", "name": "Hourly", "port": "COM14", "enabled": True}],
+            "schedule_status": {"hourly": {"last_status": "completed", "last_error": ""}},
+        })
+
+    monkeypatch.setattr(mcp_server, "api_get", fake_get)
+    health = asyncio.run(mcp_server.call_tool("serial_get_health", {"port": "COM14", "limit": 10}))
+    schedules = asyncio.run(mcp_server.call_tool("serial_get_diagnostic_schedules", {}))
+    assert "critical" in health[0].text
+    assert "Kernel panic detected" in health[0].text
+    assert "hourly" in schedules[0].text
+    assert "completed" in schedules[0].text

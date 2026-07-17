@@ -2,9 +2,12 @@
 import base64
 import io
 import json
+import asyncio
 import threading
 import time
 import zipfile
+from pathlib import Path
+import uuid
 
 import pytest
 from fastapi.testclient import TestClient
@@ -12,6 +15,7 @@ from starlette.websockets import WebSocketDisconnect
 
 import serial_manager as sm_mod
 import main
+from automations import AutomationStore, HealthEvent, MacroRunResult
 from serial_manager import serial_manager
 from transfers import ActiveTransfer, BatchFile, BatchReceiveResult, ReceiveResult, TransferResult
 from fakeserial import FakeSerial
@@ -239,6 +243,321 @@ def test_log_session_page_endpoint_is_bounded(monkeypatch):
             "offset": 1,
             "limit": 1,
         }
+
+
+def test_automation_crud_endpoints_persist_definitions(monkeypatch):
+    path = Path.cwd() / ".test-artifacts" / f"api-automations-{uuid.uuid4().hex}.json"
+    store = AutomationStore(path)
+    monkeypatch.setattr(main, "automation_store", store)
+    try:
+        with TestClient(main.app) as c:
+            macro = {
+                "id": "linux-health",
+                "name": "Linux health",
+                "steps": [{"command": "uname -a", "newline": "\r", "wait_seconds": 1}],
+                "enabled": True,
+            }
+            assert c.put("/api/automations/macros/linux-health", json=macro).status_code == 200
+            rule = {
+                "id": "kernel-panic",
+                "name": "Kernel panic",
+                "pattern": "kernel panic",
+                "severity": "critical",
+                "message": "Kernel panic detected",
+                "cooldown_seconds": 60,
+                "enabled": True,
+            }
+            schedule = {
+                "id": "hourly-health",
+                "name": "Hourly health",
+                "macro_id": "linux-health",
+                "port": "COM14",
+                "interval_seconds": 3600,
+                "enabled": True,
+            }
+            assert c.put("/api/automations/rules/kernel-panic", json=rule).status_code == 200
+            assert c.put("/api/automations/schedules/hourly-health", json=schedule).status_code == 200
+            listed = c.get("/api/automations").json()
+            assert listed["macros"] == [macro]
+            assert listed["rules"] == [rule]
+            assert listed["schedules"] == [schedule]
+            blocked = c.delete("/api/automations/macros/linux-health")
+            assert blocked.status_code == 400
+            assert "referenced by a schedule" in blocked.json()["detail"]
+            assert c.delete("/api/automations/schedules/hourly-health").status_code == 200
+            assert c.delete("/api/automations/rules/kernel-panic").status_code == 200
+            assert c.delete("/api/automations/macros/linux-health").status_code == 200
+            cleared = c.get("/api/automations").json()
+            assert cleared["macros"] == []
+            assert cleared["rules"] == []
+            assert cleared["schedules"] == []
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def test_macro_run_endpoint_respects_writer_lease(monkeypatch):
+    result = MacroRunResult(
+        run_id="run-1",
+        macro_id="linux-health",
+        port="COM_AUTO",
+        owner_id="client-a",
+        status="completed",
+        output="Linux\n",
+        steps_completed=1,
+        started_at=1,
+        finished_at=2,
+    )
+    captured = {}
+
+    def fake_run(*args):
+        captured["args"] = args
+        return result
+
+    monkeypatch.setattr(main.macro_runtime, "run_macro", fake_run)
+    with TestClient(main.app) as c:
+        first = {"X-AI-Serial-Client": "client-a"}
+        second = {"X-AI-Serial-Client": "client-b"}
+        assert c.post("/api/open", json={"port": "COM_AUTO"}, headers=first).status_code == 200
+        denied = c.post(
+            "/api/automations/macros/linux-health/run",
+            params={"port": "COM_AUTO", "run_id": "run-1"},
+            headers=second,
+        )
+        assert denied.status_code == 409
+        assert denied.json()["detail"]["code"] == "lease.conflict"
+
+        response = c.post(
+            "/api/automations/macros/linux-health/run",
+            params={"port": "COM_AUTO", "run_id": "run-1"},
+            headers=first,
+        )
+        assert response.status_code == 200
+        assert response.json()["output"] == "Linux\n"
+        assert captured["args"][:4] == ("run-1", "linux-health", "COM_AUTO", "client-a")
+
+
+def test_macro_run_endpoint_rejects_active_protocol_transfer(monkeypatch):
+    active = ActiveTransfer("tx-busy", "COM_AUTO", "client-a", "ymodem", threading.Event())
+    monkeypatch.setattr(main.serial_transfers, "active_for_port", lambda port: active)
+    with TestClient(main.app) as c:
+        response = c.post(
+            "/api/automations/macros/linux-health/run",
+            params={"port": "COM_AUTO", "run_id": "run-busy"},
+            headers={"X-AI-Serial-Client": "client-a"},
+        )
+        assert response.status_code == 409
+        assert response.json()["detail"]["code"] == "transfer.busy"
+
+
+def test_protocol_transfer_rejects_same_owner_while_macro_is_running(monkeypatch):
+    started = threading.Event()
+    release = threading.Event()
+    result = MacroRunResult(
+        run_id="run-locked",
+        macro_id="linux-health",
+        port="COM_LOCKED",
+        owner_id="shared-client",
+        status="completed",
+        steps_completed=1,
+        started_at=1,
+        finished_at=2,
+    )
+
+    def fake_run(*args):
+        started.set()
+        assert release.wait(2)
+        return result
+
+    monkeypatch.setattr(main.macro_runtime, "run_macro", fake_run)
+    monkeypatch.setattr(
+        main.serial_transfers,
+        "send",
+        lambda *args: TransferResult("xmodem", 1, 1, 0, 0.1),
+    )
+    headers = {"X-AI-Serial-Client": "shared-client"}
+    with TestClient(main.app) as c:
+        macro_response = {}
+
+        def run_macro_request():
+            macro_response["value"] = c.post(
+                "/api/automations/macros/linux-health/run",
+                params={"port": "COM_LOCKED", "run_id": "run-locked"},
+                headers=headers,
+            )
+
+        thread = threading.Thread(target=run_macro_request)
+        thread.start()
+        assert started.wait(2)
+        try:
+            response = c.post(
+                "/api/transfer/send",
+                params={"port": "COM_LOCKED", "transfer_id": "tx-locked"},
+                headers=headers,
+                content=b"x",
+            )
+        finally:
+            release.set()
+            thread.join(2)
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "port.operation_busy"
+    assert macro_response["value"].status_code == 200
+
+
+def test_automation_status_includes_health_events(monkeypatch):
+    event = HealthEvent(
+        event_id="health-1",
+        rule_id="kernel-panic",
+        port="COM14",
+        severity="critical",
+        message="Kernel panic detected",
+        content="kernel panic",
+        timestamp=1,
+    )
+    monkeypatch.setattr(main.health_monitor, "history", lambda port="", limit=100: [event])
+    with TestClient(main.app) as c:
+        response = c.get("/api/automations/health", params={"port": "COM14"})
+        assert response.status_code == 200
+        assert response.json()[0]["severity"] == "critical"
+
+
+def test_serial_messages_are_observed_by_health_monitor(monkeypatch):
+    observed = []
+    monkeypatch.setattr(main.health_monitor, "observe", lambda port, content: observed.append((port, content)) or [])
+    message = main.SerialMessage(
+        source=main.MessageSource.DEVICE,
+        content="kernel panic",
+        timestamp=1,
+        sequence=1,
+    )
+
+    main.on_serial_message("COM14", message)
+
+    assert observed == [("COM14", "kernel panic")]
+
+
+def test_due_schedule_runs_with_internal_lease(monkeypatch):
+    schedule = main.DiagnosticSchedule(
+        id="health-every-minute",
+        name="Health every minute",
+        macro_id="linux-health",
+        port="COM14",
+        interval_seconds=60,
+        enabled=True,
+    )
+    marked = []
+    recorded = []
+    captured = {}
+    result = MacroRunResult(
+        run_id="scheduled-run",
+        macro_id="linux-health",
+        port="COM14",
+        owner_id="automation-scheduler",
+        status="completed",
+        output="Linux\n",
+        steps_completed=1,
+        started_at=1,
+        finished_at=2,
+    )
+    monkeypatch.setattr(main.schedule_planner, "due", lambda: [schedule])
+    monkeypatch.setattr(main.schedule_planner, "mark_started", lambda schedule_id: marked.append(schedule_id))
+    monkeypatch.setattr(
+        main.schedule_planner,
+        "record_result",
+        lambda schedule_id, status, error="", run_id="": recorded.append((schedule_id, status, error, run_id)),
+    )
+    monkeypatch.setattr(main.serial_manager, "is_open", lambda port: True)
+    monkeypatch.setattr(main.serial_transfers, "active_for_port", lambda port: None)
+
+    def fake_run(*args):
+        captured["args"] = args
+        return result
+
+    monkeypatch.setattr(main.macro_runtime, "run_macro", fake_run)
+    asyncio.run(main._run_due_schedules_once())
+
+    assert marked == [schedule.id]
+    assert captured["args"][1:] == ("linux-health", "COM14", "automation-scheduler")
+    assert recorded == [(schedule.id, "completed", "", captured["args"][0])]
+    assert main.port_leases.get("COM14") is None
+
+
+def test_due_schedule_skips_user_owned_lease(monkeypatch):
+    schedule = main.DiagnosticSchedule(
+        id="health-every-minute",
+        name="Health every minute",
+        macro_id="linux-health",
+        port="COM14",
+        interval_seconds=60,
+        enabled=True,
+    )
+    recorded = []
+    main.port_leases.acquire("COM14", "user-client", "User", 30)
+    monkeypatch.setattr(main.schedule_planner, "due", lambda: [schedule])
+    monkeypatch.setattr(main.schedule_planner, "mark_started", lambda schedule_id: None)
+    monkeypatch.setattr(
+        main.schedule_planner,
+        "record_result",
+        lambda schedule_id, status, error="", run_id="": recorded.append((status, error)),
+    )
+    monkeypatch.setattr(main.serial_manager, "is_open", lambda port: True)
+    monkeypatch.setattr(main.serial_transfers, "active_for_port", lambda port: None)
+    monkeypatch.setattr(main.macro_runtime, "run_macro", lambda *args: pytest.fail("macro must not run"))
+
+    asyncio.run(main._run_due_schedules_once())
+
+    assert recorded == [("skipped", "writer lease is held by another client")]
+
+
+def test_due_schedule_records_runtime_error_and_continues(monkeypatch):
+    schedules = [
+        main.DiagnosticSchedule(
+            id="broken",
+            name="Broken",
+            macro_id="linux-health",
+            port="COM16",
+            interval_seconds=60,
+            enabled=True,
+        ),
+        main.DiagnosticSchedule(
+            id="healthy",
+            name="Healthy",
+            macro_id="linux-health",
+            port="COM17",
+            interval_seconds=60,
+            enabled=True,
+        ),
+    ]
+    recorded = []
+    monkeypatch.setattr(main.schedule_planner, "due", lambda: schedules)
+    monkeypatch.setattr(main.schedule_planner, "mark_started", lambda schedule_id: None)
+    monkeypatch.setattr(
+        main.schedule_planner,
+        "record_result",
+        lambda schedule_id, status, error="", run_id="": recorded.append((schedule_id, status, error)),
+    )
+    monkeypatch.setattr(main.serial_manager, "is_open", lambda port: True)
+    monkeypatch.setattr(main.serial_transfers, "active_for_port", lambda port: None)
+
+    def fake_run(run_id, macro_id, port, owner_id):
+        if port == "COM16":
+            raise RuntimeError("serial history failed")
+        return MacroRunResult(
+            run_id=run_id,
+            macro_id=macro_id,
+            port=port,
+            owner_id=owner_id,
+            status="completed",
+            started_at=1,
+            finished_at=2,
+        )
+
+    monkeypatch.setattr(main.macro_runtime, "run_macro", fake_run)
+
+    asyncio.run(main._run_due_schedules_once())
+
+    assert recorded[0] == ("broken", "failed", "serial history failed")
+    assert recorded[1] == ("healthy", "completed", "")
 
 
 def test_protocol_receive_endpoint_returns_exact_bytes(monkeypatch):
