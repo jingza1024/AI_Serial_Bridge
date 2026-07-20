@@ -1,5 +1,15 @@
 # Findings & Decisions
 
+## Serial Reopen Regression (2026-07-20)
+- User reproduction: open COM17 at 115200 in the desktop app, interact successfully, close the port, reopen it, then type `ls`.
+- After reopen, the desktop terminal shows no response, but another serial tool later displays the queued `ls` result after Enter is sent.
+- The command reaches the Linux device, so the initial fault boundary is receive/read delivery or display subscription after reopen rather than serial write.
+- Screenshot 1 shows COM17 reported connected and writable after reopen while the terminal remains at the reconnect status text.
+- Screenshot 2 confirms the Linux shell and serial link remain functional outside the application.
+- Root cause: each reopened backend `SerialManager` restarts message/raw sequence numbers at 1, while the module-level Vue store retained the previous port arrays and deduplicated by sequence.
+- Fix boundary: `useSerial.ts` clears short-lived per-port message, raw, settings, lease, and open-state caches only after the authoritative `open_ports` update confirms a port closed. Persistent backend history is unchanged.
+- Regression coverage: Vitest covers UI close/reopen and external-client close/reopen with reused sequence numbers.
+
 ## Release Documentation Audit (2026-07-20)
 - The project is source-installed; no PyPI package or installer artifact is currently published.
 - Quick Start previously started services before documenting dependency installation.

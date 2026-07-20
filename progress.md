@@ -2,6 +2,22 @@
 
 ## Session: 2026-07-20
 
+### Phase 9: Serial Reopen Receive Regression
+- **Status:** complete
+- Evidence:
+  - COM17 at 115200 works on first desktop connection.
+  - After close/reopen, writes still reach the Linux device but receive output is not shown.
+  - A second serial terminal reveals the queued command output, isolating the first investigation to read delivery/UI subscription lifecycle.
+- Root cause:
+  - Reopened backend sessions restart per-port sequence numbers while Vue retained old session caches and dropped reused sequence values as duplicates.
+- Fix:
+  - Clear per-port transient caches when the authoritative `open_ports` update confirms closure, while preserving persistent server-side history.
+- Verification:
+  - Focused lifecycle tests: 3 passed.
+  - Full frontend: 15 tests passed, production build passed, Playwright 3/3 passed.
+  - Backend: 100 tests passed.
+  - COM17@115200 authenticated hardware probe passed and released the port.
+
 ### Phase 8: Release Documentation and Publishing
 - **Status:** complete
 - Actions:
