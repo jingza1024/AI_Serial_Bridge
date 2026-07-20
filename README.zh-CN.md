@@ -123,7 +123,7 @@ AI Serial Bridge 当前通过源码安装，不是 PyPI 软件包。运行环境
 
 ```bash
 git clone https://github.com/jingza1024/AI_Serial_Bridge.git
-cd AI_Serial
+cd AI_Serial_Bridge
 python -m venv .venv
 ```
 
@@ -198,7 +198,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-pyinstaller ai-serial-bridge.spec
+python -m PyInstaller ai-serial-bridge.spec
 ```
 
 onedir 产物位于 `dist/AI Serial Bridge/`。桌面发行版不内置 MCP stdio 代理；请在源码目录安装 MCP 依赖，并让 AI 客户端运行 `backend/mcp_server.py`。

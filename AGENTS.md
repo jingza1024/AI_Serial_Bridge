@@ -2,49 +2,38 @@
 
 ## Project Structure & Module Organization
 
-- `backend/` contains the FastAPI service, serial/lease management, rotating logs, transfer protocols, and stdio MCP proxy. Tests live in `backend/tests/`; `fakeserial.py` avoids physical hardware dependencies.
-- `frontend/src/` is the Vue 3 client: reusable state in `composables/`, UI in `components/`, translations in `locales/`, and shared CSS in `styles/`.
-- Root scripts coordinate services, pywebview, and PyInstaller.
-- `mcp-config/` holds client examples; `assets/` holds documentation images. Do not commit `frontend/dist/`, `node_modules/`, logs, or virtual environments.
+- `backend/` contains FastAPI, serial and lease management, automation, transfers, logs, and the stdio MCP proxy. Backend tests are in `backend/tests/`; use `fakeserial.py` when hardware is unnecessary.
+- `frontend/src/` contains Vue components, composables, translations, and shared styles.
+- Root scripts manage services, desktop packaging, MCP smoke tests, hardware probes, and log migration. MCP client examples live in `mcp-config/`; documentation images live in `assets/`.
 
 ## Build, Test, and Development Commands
 
 ```bash
-python -m pip install -r backend/requirements-dev.txt # full contributor environment
+python -m pip install -r backend/requirements-dev.txt
 cd frontend && npm ci
-python manager.py start                 # backend + Vite development server
-python manager.py status                # report managed service state
-python -m pytest backend/tests          # run backend regression tests
-python scripts/smoke_test_mcp.py        # verify MCP tools and connectivity
-python scripts/test_linux_serial_mcp.py # run a read-only Linux console probe
-python scripts/test_hardware_automation.py --port COM17 --baudrate 115200 # authenticated read-only automation probe
-python scripts/test_xmodem_mcp_loopback.py # verify MCP XMODEM over COM4/COM5
-python scripts/rotate_log_key.py --dry-run # validate offline log migration without writing
-cd frontend && npm run build            # type-check and build frontend/dist
-cd frontend && npm test                 # run Vitest tests
-cd frontend && npm run test:e2e         # run Playwright tests
-python desktop.py                       # run the desktop shell in development
-pyinstaller ai-serial-bridge.spec       # create the desktop distribution
+python manager.py start                 # backend + Vite
+python -m pytest backend/tests          # backend tests
+python scripts/smoke_test_mcp.py        # MCP connectivity
+python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
+cd frontend && npm test && npm run build && npm run test:e2e
+python desktop.py
+python -m PyInstaller ai-serial-bridge.spec
 ```
 
-Build `frontend/dist/` before running `desktop.py` or PyInstaller. Run `python manager.py stop` when finished with managed development services.
+Run commands from the repository root unless shown otherwise. Build `frontend/dist/` before desktop launch or packaging. Use `python manager.py status` to inspect services and `python manager.py stop` when finished. Run `python scripts/rotate_log_key.py --dry-run` before any encrypted-log migration.
 
 ## Coding Style & Naming Conventions
 
-Use Python 3.10+, four-space indentation, PEP 8 naming, public API type hints, and focused docstrings. Avoid emoji in Python console output.
-
-Vue code uses TypeScript, `<script setup>`, Composition API, two-space indentation, single quotes, and no semicolons. Name components `PascalCase.vue`, composables `useThing.ts`, and tests `test_<behavior>.py`. Keep English and Chinese translation keys synchronized.
+Use Python 3.10+, four-space indentation, PEP 8 names, public API type hints, and focused docstrings. Vue uses TypeScript, `<script setup>`, Composition API, two-space indentation, single quotes, and no semicolons. Name components `PascalCase.vue`, composables `useThing.ts`, and Python tests `test_<behavior>.py`. Keep English and Chinese translation keys synchronized.
 
 ## Testing Guidelines
 
-Pytest is the automated framework. Add regression tests beside related suites and use `FakeSerial`/`monkeypatch` instead of COM hardware. Prioritize APIs, parsing, thread lifecycle, WebSocket actions, and localization. Frontend changes require `npm run build` plus manual checks for terminal input, tab synchronization, and console errors.
+Use pytest, Vitest, and Playwright. Add regression tests beside related suites and prefer `FakeSerial`/`monkeypatch` over COM hardware. Hardware scripts must be explicit and read-only unless a protocol loopback is documented. Frontend changes require a production build and checks for terminal input, tab synchronization, and console errors.
 
 ## Commit & Pull Request Guidelines
 
-History follows Conventional Commits: `feat:`, `fix:`, `refactor:`, or `docs:`. Keep commits scoped. In PRs, explain motivation, link issues, list reproducible tests and platforms, and include UI screenshots. Verify Web UI, MCP, port release, and multi-port behavior when relevant.
+Use scoped Conventional Commits such as `feat:`, `fix:`, `refactor:`, and `docs:`. PRs must explain motivation, link issues, list reproducible tests and platforms, and include screenshots for UI changes. Verify Web UI, MCP, port release, and multi-port behavior when relevant.
 
 ## Security & Configuration
 
-Never commit tokens or machine-specific MCP paths. `/api/config` must not return secrets. Browsers use an HttpOnly session created from `AI_SERIAL_TOKEN`; MCP uses a Bearer credential. Keep origins narrow and require TLS beyond loopback.
-Treat `AI_SERIAL_LOG_KEY` as a secret; never print or commit it. Batch receive changes must preserve the 32 MiB/file, 64 MiB/batch, and basename-only extraction limits.
-For log migration, stop the backend first, set the destination key in `AI_SERIAL_LOG_KEY` and (for rotation) the source key in `AI_SERIAL_LOG_OLD_KEY`, then run the offline CLI. It creates migration backups and never accepts keys as command-line arguments.
+Never commit tokens or machine-specific MCP paths. `/api/config` must not expose secrets. Browsers use an HttpOnly session derived from `AI_SERIAL_TOKEN`; MCP uses the same secret as a Bearer credential. Require TLS beyond loopback. Never print `AI_SERIAL_LOG_KEY`. Preserve batch receive limits: 32 MiB per file, 64 MiB per batch, and basename-only extraction. Stop the backend before offline log migration and pass keys only through environment variables.

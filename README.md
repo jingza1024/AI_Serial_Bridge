@@ -125,7 +125,7 @@ AI Serial Bridge is currently installed from source; it is not published as a Py
 
 ```bash
 git clone https://github.com/jingza1024/AI_Serial_Bridge.git
-cd AI_Serial
+cd AI_Serial_Bridge
 python -m venv .venv
 ```
 
@@ -200,7 +200,7 @@ cd frontend
 npm ci
 npm run build
 cd ..
-pyinstaller ai-serial-bridge.spec
+python -m PyInstaller ai-serial-bridge.spec
 ```
 
 The onedir application is written to `dist/AI Serial Bridge/`. The packaged desktop does not embed the MCP stdio proxy; configure AI clients to run `backend/mcp_server.py` from a source checkout with the MCP requirements installed.
