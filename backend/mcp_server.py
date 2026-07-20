@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import io
 import json
+import re
 import secrets
 import zipfile
 from pathlib import Path
@@ -71,6 +72,15 @@ async def api_post(path: str, json_data: dict = None, params: dict | None = None
     client = await _get_client()
     response = await client.post(
         f"{BASE_URL}{path}", params=params, json=json_data, headers=_client_headers()
+    )
+    response.raise_for_status()
+    return response
+
+
+async def api_post_long(path: str, params: dict | None = None):
+    client = await _get_client()
+    response = await client.post(
+        f"{BASE_URL}{path}", params=params, headers=_client_headers(), timeout=None
     )
     response.raise_for_status()
     return response
@@ -366,6 +376,50 @@ async def list_tools() -> list[Tool]:
                 },
                 "required": ["port", "output_directory"]
             }
+        ),
+        Tool(
+            name="serial_list_macros",
+            description="列出后端已配置的串口命令宏",
+            inputSchema={"type": "object", "properties": {}, "required": []}
+        ),
+        Tool(
+            name="serial_run_macro",
+            description="在指定串口运行已配置命令宏，并返回设备输出",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "port": {"type": "string"},
+                    "macro_id": {"type": "string"},
+                    "run_id": {"type": "string", "description": "可选调用方运行 ID"}
+                },
+                "required": ["port", "macro_id"]
+            }
+        ),
+        Tool(
+            name="serial_cancel_macro",
+            description="取消当前 MCP 客户端发起的命令宏",
+            inputSchema={
+                "type": "object",
+                "properties": {"run_id": {"type": "string"}},
+                "required": ["run_id"]
+            }
+        ),
+        Tool(
+            name="serial_get_health",
+            description="读取设备健康规则产生的最近事件",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "port": {"type": "string"},
+                    "limit": {"type": "integer", "minimum": 1, "maximum": 1000, "default": 100}
+                },
+                "required": []
+            }
+        ),
+        Tool(
+            name="serial_get_diagnostic_schedules",
+            description="列出定时诊断计划及最近运行状态",
+            inputSchema={"type": "object", "properties": {}, "required": []}
         ),
         Tool(
             name="serial_get_history",
@@ -669,6 +723,91 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                     f"{len(prepared)} files, {total_size} bytes，清单: {manifest_target}"
                 ),
             )]
+
+        elif name == "serial_list_macros":
+            response = await api_get("/api/automations")
+            macros = response.json().get("macros", [])
+            if not macros:
+                return [TextContent(type="text", text="未配置命令宏")]
+            lines = ["命令宏:"]
+            for macro in macros:
+                state = "enabled" if macro.get("enabled", True) else "disabled"
+                lines.append(
+                    f"- {macro.get('id', '')}: {macro.get('name', '')} "
+                    f"({len(macro.get('steps', []))} steps, {state})"
+                )
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "serial_run_macro":
+            port = str(arguments.get("port", "")).strip()
+            macro_id = str(arguments.get("macro_id", "")).strip()
+            run_id = str(arguments.get("run_id", "")).strip() or f"mcp-macro-{secrets.token_urlsafe(10)}"
+            if not port or not macro_id:
+                return [TextContent(type="text", text="错误: 请指定 port 和 macro_id")]
+            if re.fullmatch(r"[A-Za-z0-9_-]{1,64}", run_id) is None:
+                return [TextContent(type="text", text="错误: run_id 格式无效")]
+            response = await api_post_long(
+                f"/api/automations/macros/{macro_id}/run",
+                params={"port": port, "run_id": run_id},
+            )
+            result = response.json()
+            output = str(result.get("output", ""))
+            text = (
+                f"[{port}] 宏 {macro_id} {result.get('status', 'unknown')}, "
+                f"{result.get('steps_completed', 0)} steps"
+            )
+            if output:
+                text += f"\n{output}"
+            if result.get("error"):
+                text += f"\n错误: {result['error']}"
+            return [TextContent(type="text", text=text)]
+
+        elif name == "serial_cancel_macro":
+            run_id = str(arguments.get("run_id", "")).strip()
+            if not run_id:
+                return [TextContent(type="text", text="错误: 请指定 run_id")]
+            response = await api_post(f"/api/automations/runs/{run_id}/cancel")
+            cancelled = response.json().get("success", False)
+            text = f"已请求取消宏 {run_id}" if cancelled else f"未找到可取消的宏 {run_id}"
+            return [TextContent(type="text", text=text)]
+
+        elif name == "serial_get_health":
+            port = str(arguments.get("port", "")).strip()
+            limit = min(max(int(arguments.get("limit", 100)), 1), 1000)
+            response = await api_get(
+                "/api/automations/health",
+                params={"port": port, "limit": limit},
+            )
+            events = response.json()
+            if not events:
+                return [TextContent(type="text", text="暂无设备健康事件")]
+            lines = ["设备健康事件:"]
+            for event in events:
+                lines.append(
+                    f"- {event.get('severity', 'info')}: {event.get('message', '')} "
+                    f"({event.get('content', '')})"
+                )
+            return [TextContent(type="text", text="\n".join(lines))]
+
+        elif name == "serial_get_diagnostic_schedules":
+            response = await api_get("/api/automations")
+            payload = response.json()
+            schedules = payload.get("schedules", [])
+            status = payload.get("schedule_status", {})
+            if not schedules:
+                return [TextContent(type="text", text="未配置定时诊断")]
+            lines = ["定时诊断:"]
+            for schedule in schedules:
+                schedule_id = schedule.get("id", "")
+                state = status.get(schedule_id, {})
+                lines.append(
+                    f"- {schedule_id}: {schedule.get('name', '')} @ {schedule.get('port', '')}, "
+                    f"enabled={schedule.get('enabled', False)}, "
+                    f"last={state.get('last_status', 'idle')}"
+                )
+                if state.get("last_error"):
+                    lines.append(f"  error: {state['last_error']}")
+            return [TextContent(type="text", text="\n".join(lines))]
 
         elif name == "serial_get_history":
             port = arguments.get("port", "")

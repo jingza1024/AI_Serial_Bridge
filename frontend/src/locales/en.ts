@@ -81,6 +81,15 @@ export default {
     noRecords: 'No records in this session.',
     recordCount: '{count} records',
   },
+  automations: {
+    open: 'Automations', title: 'Device Automations', macros: 'Macros', health: 'Health', schedules: 'Schedules',
+    port: 'Port', runPort: 'Macro run port', id: 'ID', name: 'Name', enabled: 'Enabled', edit: 'Edit', delete: 'Delete',
+    run: 'Run', cancel: 'Cancel', save: 'Save', refresh: 'Refresh', macroEditor: 'Macro editor', ruleEditor: 'Health rule editor',
+    scheduleEditor: 'Schedule editor', command: 'Command', waitSeconds: 'Wait seconds', addStep: 'Add step', stepCount: '{count} steps',
+    noMacros: 'No command macros configured.', healthEvents: 'Health events', noHealthEvents: 'No health events.', healthRules: 'Health rules',
+    pattern: 'Pattern', message: 'Message', severity: 'Severity', cooldown: 'Cooldown seconds', noSchedules: 'No diagnostic schedules configured.',
+    macro: 'Macro', selectMacro: 'Select macro', interval: 'Interval seconds', close: 'Close', loading: 'Loading...',
+  },
   events: {
     port: {
       already_open: 'Port already open: {port}',

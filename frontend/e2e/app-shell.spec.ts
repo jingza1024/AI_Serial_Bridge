@@ -52,3 +52,32 @@ test('browses encrypted persistent log sessions with pagination', async ({ page 
   await expect(dialog.getByText(/boot complete/)).toBeVisible()
   await expect(dialog.getByText('1-1 / 1')).toBeVisible()
 })
+
+test('opens the device automation console with API-backed panels', async ({ page }) => {
+  await page.route('**/api/automations', route => route.fulfill({
+    contentType: 'application/json',
+    body: JSON.stringify({
+      macros: [{
+        id: 'linux-health',
+        name: 'Linux health',
+        steps: [{ command: 'uname -a', newline: '\r', wait_seconds: 1 }],
+        enabled: true,
+      }],
+      rules: [],
+      schedules: [],
+      schedule_status: {},
+    }),
+  }))
+  await page.route('**/api/automations/health?*', route => route.fulfill({ contentType: 'application/json', body: '[]' }))
+  await page.route('**/api/automations/runs?*', route => route.fulfill({ contentType: 'application/json', body: '[]' }))
+
+  await page.goto('/')
+  await page.getByRole('button', { name: '自动化' }).click()
+  const dialog = page.getByRole('dialog', { name: '设备自动化' })
+  await expect(dialog).toBeVisible()
+  await expect(dialog.getByText('Linux health')).toBeVisible()
+  await dialog.getByRole('button', { name: '健康', exact: true }).click()
+  await expect(dialog.getByRole('heading', { name: '健康规则', exact: true })).toBeVisible()
+  await dialog.getByRole('button', { name: '关闭' }).click()
+  await expect(dialog).toBeHidden()
+})

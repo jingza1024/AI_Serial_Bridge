@@ -26,9 +26,12 @@
 - Optional Fernet-encrypted rotating logs
 - Paginated Web UI session log browser
 - Vitest coverage, Playwright E2E, and extracted xterm lifecycle
+- Device health rules, bounded command macros, scheduled diagnostics, and localized Web UI automation console
+- Offline encrypted-log migration and Fernet key rotation with dry-run, backups, and rollback
+- Authenticated COM17 @ 115200 read-only hardware automation verification
 
 ## Next Priorities
 
-1. Add device health rules, command macros, and scheduled diagnostics.
-2. Expand hardware-backed E2E coverage for authenticated serial, leases, and batch transfers.
-3. Add key rotation and migration tooling for encrypted persistent logs.
+1. Expand hardware-backed E2E coverage for authenticated serial, leases, and batch transfers.
+2. Add CI coverage for offline log migration on Windows and Linux.
+3. Review automation definitions and diagnostic schedules with device-specific operators before enabling them in production.

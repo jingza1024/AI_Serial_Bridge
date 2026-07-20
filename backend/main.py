@@ -11,9 +11,11 @@ import io
 import json
 import os
 import secrets
+import threading
 import time
 import zipfile
 from contextlib import asynccontextmanager, suppress
+from functools import wraps
 from typing import List, Literal
 
 from pathlib import Path
@@ -23,6 +25,16 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field, ValidationError
 
+from automations import (
+    AutomationStore,
+    DiagnosticSchedule,
+    HealthEvent,
+    HealthMonitor,
+    HealthRule,
+    MacroDefinition,
+    MacroRuntime,
+    SchedulePlanner,
+)
 from leases import LeaseResult, PortLease, port_leases
 from log_store import serial_logs
 from transfers import (
@@ -52,6 +64,18 @@ MAX_WS_TEXT = 64 * 1024
 MAX_FILE_CHUNK = 8 * 1024
 MAX_FILE_SIZE = 32 * 1024 * 1024
 DEFAULT_LEASE_TTL = 30.0
+
+automation_store = AutomationStore()
+health_monitor = HealthMonitor(automation_store)
+macro_runtime = MacroRuntime(
+    automation_store,
+    is_open=serial_manager.is_open,
+    write=lambda port, command, newline: serial_manager.write(
+        port, command, MessageSource.AI, "utf-8", newline
+    ),
+    get_history=serial_manager.get_history,
+)
+schedule_planner = SchedulePlanner(automation_store)
 
 
 def _token_ok(provided: str) -> bool:
@@ -296,8 +320,43 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 _event_loop: asyncio.AbstractEventLoop | None = None
-_serial_event_queue: asyncio.Queue[tuple[str, str, SerialMessage | SerialRawChunk]] | None = None
+_serial_event_queue: asyncio.Queue[
+    tuple[str, str, SerialMessage | SerialRawChunk | HealthEvent]
+] | None = None
 _serial_event_worker_task: asyncio.Task | None = None
+_automation_scheduler_task: asyncio.Task | None = None
+_AUTOMATION_OWNER_ID = "automation-scheduler"
+_AUTOMATION_OWNER_LABEL = "Scheduled diagnostics"
+_port_operation_registry_lock = threading.Lock()
+_port_operation_locks: dict[str, threading.Lock] = {}
+
+
+def _try_port_operation(port: str) -> threading.Lock | None:
+    with _port_operation_registry_lock:
+        operation = _port_operation_locks.setdefault(port, threading.Lock())
+    return operation if operation.acquire(blocking=False) else None
+
+
+def _operation_conflict(port: str) -> JSONResponse:
+    return JSONResponse(
+        {"detail": {"code": "port.operation_busy", "port": port}},
+        status_code=409,
+    )
+
+
+def _serialized_port_operation(endpoint):
+    @wraps(endpoint)
+    async def wrapper(*args, **kwargs):
+        port = str(kwargs.get("port", ""))
+        operation = _try_port_operation(port)
+        if operation is None:
+            return _operation_conflict(port)
+        try:
+            return await endpoint(*args, **kwargs)
+        finally:
+            operation.release()
+
+    return wrapper
 
 
 async def _serial_event_worker():
@@ -328,14 +387,18 @@ async def _serial_event_worker():
                 await broadcast_open_ports()
                 await broadcast_lease(port)
         else:
-            assert isinstance(event, SerialRawChunk)
-            await manager.broadcast({
-                "type": "serial_raw",
-                "port": port,
-                "raw_hex": event.data.hex(),
-                "sequence": event.sequence,
-                "timestamp": event.timestamp,
-            })
+            if kind == "raw":
+                assert isinstance(event, SerialRawChunk)
+                await manager.broadcast({
+                    "type": "serial_raw",
+                    "port": port,
+                    "raw_hex": event.data.hex(),
+                    "sequence": event.sequence,
+                    "timestamp": event.timestamp,
+                })
+            else:
+                assert isinstance(event, HealthEvent)
+                await manager.broadcast({"type": "health_event", **event.model_dump(mode="json")})
         _serial_event_queue.task_done()
 
 
@@ -344,6 +407,7 @@ def on_serial_message(port: str, msg: SerialMessage):
     注意：此回调运行在后台读取线程，必须用 run_coroutine_threadsafe
     """
     serial_logs.record_message(port, msg)
+    health_events = health_monitor.observe(port, msg.content) if msg.source == MessageSource.DEVICE else []
     if _event_loop is None or _serial_event_queue is None:
         return
 
@@ -355,6 +419,11 @@ def on_serial_message(port: str, msg: SerialMessage):
                 _serial_event_queue.task_done()
         with suppress(asyncio.QueueFull):
             _serial_event_queue.put_nowait(("message", port, msg))
+        for health_event in health_events:
+            if _serial_event_queue.full():
+                break
+            with suppress(asyncio.QueueFull):
+                _serial_event_queue.put_nowait(("health", port, health_event))
 
     _event_loop.call_soon_threadsafe(enqueue)
 
@@ -405,6 +474,58 @@ async def broadcast_transfer(message: dict):
     await manager.broadcast({"type": "transfer_progress", **message})
 
 
+async def _run_due_schedules_once() -> None:
+    for schedule in schedule_planner.due():
+        schedule_planner.mark_started(schedule.id)
+        operation = _try_port_operation(schedule.port)
+        if operation is None:
+            schedule_planner.record_result(schedule.id, "skipped", "port operation is active")
+            continue
+        run_id = ""
+        try:
+            if not serial_manager.is_open(schedule.port):
+                schedule_planner.record_result(schedule.id, "skipped", "port is not open")
+                continue
+            if serial_transfers.active_for_port(schedule.port) is not None:
+                schedule_planner.record_result(schedule.id, "skipped", "protocol transfer is active")
+                continue
+            lease = port_leases.ensure_writer(
+                schedule.port, _AUTOMATION_OWNER_ID, _AUTOMATION_OWNER_LABEL, 300
+            )
+            if not lease.acquired:
+                schedule_planner.record_result(
+                    schedule.id, "skipped", "writer lease is held by another client"
+                )
+                continue
+            run_id = f"schedule-{schedule.id}-{secrets.token_urlsafe(8)}"
+            result = await asyncio.to_thread(
+                macro_runtime.run_macro,
+                run_id,
+                schedule.macro_id,
+                schedule.port,
+                _AUTOMATION_OWNER_ID,
+            )
+            schedule_planner.record_result(
+                schedule.id, result.status, result.error, run_id
+            )
+            await manager.broadcast({
+                "type": "automation_run",
+                **result.model_dump(mode="json"),
+            })
+        except Exception as exc:
+            schedule_planner.record_result(schedule.id, "failed", str(exc), run_id)
+        finally:
+            port_leases.release(schedule.port, _AUTOMATION_OWNER_ID)
+            await broadcast_lease(schedule.port)
+            operation.release()
+
+
+async def _automation_scheduler() -> None:
+    while True:
+        await _run_due_schedules_once()
+        await asyncio.sleep(0.5)
+
+
 async def reject_ws_transfer_busy(websocket: WebSocket, port: str) -> bool:
     active = serial_transfers.active_for_port(port)
     if active is None:
@@ -427,11 +548,12 @@ serial_manager.register_raw_callback(on_serial_raw)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期"""
-    global _event_loop, _serial_event_queue, _serial_event_worker_task
+    global _event_loop, _serial_event_queue, _serial_event_worker_task, _automation_scheduler_task
     _event_loop = asyncio.get_running_loop()
     serial_logs.start()
     _serial_event_queue = asyncio.Queue(maxsize=1000)
     _serial_event_worker_task = asyncio.create_task(_serial_event_worker())
+    _automation_scheduler_task = asyncio.create_task(_automation_scheduler())
     print("[AI Serial Bridge] 启动")
     print(f"[WebSocket] ws://localhost:{os.environ.get('AI_SERIAL_PORT', '8000')}/ws")
     print(f"[API] http://localhost:{os.environ.get('AI_SERIAL_PORT', '8000')}")
@@ -445,6 +567,11 @@ async def lifespan(app: FastAPI):
         for port in open_ports:
             await asyncio.to_thread(serial_manager.close, port)
         await asyncio.to_thread(serial_logs.stop)
+        if _automation_scheduler_task is not None:
+            _automation_scheduler_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await _automation_scheduler_task
+        _automation_scheduler_task = None
         if _serial_event_worker_task is not None:
             _serial_event_worker_task.cancel()
             with suppress(asyncio.CancelledError):
@@ -740,7 +867,118 @@ async def clear_persistent_logs(port: str):
     return {"success": True, "removed_files": removed}
 
 
+def _automation_definitions() -> dict:
+    return {
+        "macros": [item.model_dump(mode="json") for item in automation_store.list_macros()],
+        "rules": [item.model_dump(mode="json") for item in automation_store.list_rules()],
+        "schedules": [item.model_dump(mode="json") for item in automation_store.list_schedules()],
+        "schedule_status": {
+            key: value.model_dump(mode="json")
+            for key, value in schedule_planner.status().items()
+        },
+    }
+
+
+def _definition_error(exc: ValueError) -> JSONResponse:
+    return JSONResponse({"detail": str(exc)}, status_code=400)
+
+
+@app.get("/api/automations")
+async def list_automations():
+    return _automation_definitions()
+
+
+@app.put("/api/automations/macros/{macro_id}")
+async def save_macro(macro_id: str, macro: MacroDefinition):
+    if macro.id != macro_id:
+        return JSONResponse({"detail": "macro id does not match path"}, status_code=400)
+    automation_store.save_macro(macro)
+    return {"success": True, "macro": macro.model_dump(mode="json")}
+
+
+@app.delete("/api/automations/macros/{macro_id}")
+async def delete_macro(macro_id: str):
+    try:
+        removed = automation_store.delete_macro(macro_id)
+    except ValueError as exc:
+        return _definition_error(exc)
+    return {"success": removed, "macro_id": macro_id}
+
+
+@app.put("/api/automations/rules/{rule_id}")
+async def save_health_rule(rule_id: str, rule: HealthRule):
+    if rule.id != rule_id:
+        return JSONResponse({"detail": "rule id does not match path"}, status_code=400)
+    automation_store.save_rule(rule)
+    return {"success": True, "rule": rule.model_dump(mode="json")}
+
+
+@app.delete("/api/automations/rules/{rule_id}")
+async def delete_health_rule(rule_id: str):
+    return {"success": automation_store.delete_rule(rule_id), "rule_id": rule_id}
+
+
+@app.put("/api/automations/schedules/{schedule_id}")
+async def save_diagnostic_schedule(schedule_id: str, schedule: DiagnosticSchedule):
+    if schedule.id != schedule_id:
+        return JSONResponse({"detail": "schedule id does not match path"}, status_code=400)
+    try:
+        automation_store.save_schedule(schedule)
+    except ValueError as exc:
+        return _definition_error(exc)
+    return {"success": True, "schedule": schedule.model_dump(mode="json")}
+
+
+@app.delete("/api/automations/schedules/{schedule_id}")
+async def delete_diagnostic_schedule(schedule_id: str):
+    return {"success": automation_store.delete_schedule(schedule_id), "schedule_id": schedule_id}
+
+
+@app.post("/api/automations/macros/{macro_id}/run")
+@_serialized_port_operation
+async def run_macro(
+    request: Request,
+    macro_id: str,
+    port: str,
+    run_id: str = Query(min_length=1, max_length=64, pattern=r"^[A-Za-z0-9_-]+$"),
+):
+    transfer_conflict = _transfer_conflict(port)
+    if transfer_conflict is not None:
+        return transfer_conflict
+    client_id, client_label = _client_identity(request, "rest-client", "REST client")
+    lease = port_leases.ensure_writer(port, client_id, client_label, 300)
+    if not lease.acquired:
+        return _lease_conflict(port, lease)
+    try:
+        result = await asyncio.to_thread(
+            macro_runtime.run_macro, run_id, macro_id, port, client_id
+        )
+    except ValueError as exc:
+        return _definition_error(exc)
+    finally:
+        port_leases.ensure_writer(port, client_id, client_label, DEFAULT_LEASE_TTL)
+        await broadcast_lease(port)
+    return result.model_dump(mode="json")
+
+
+@app.post("/api/automations/runs/{run_id}/cancel")
+async def cancel_macro_run(request: Request, run_id: str):
+    client_id, _ = _client_identity(request, "rest-client", "REST client")
+    return {"success": macro_runtime.cancel(run_id, client_id), "run_id": run_id}
+
+
+@app.get("/api/automations/runs")
+async def list_macro_runs(port: str = "", limit: int = Query(default=100, ge=1, le=1000)):
+    return [item.model_dump(mode="json") for item in macro_runtime.history(port, limit)]
+
+
+@app.get("/api/automations/health")
+async def list_health_events(port: str = "", limit: int = Query(default=100, ge=1, le=1000)):
+    return [item.model_dump(mode="json") for item in health_monitor.history(port, limit)]
+
+
 @app.post("/api/transfer/send")
+@_serialized_port_operation
 async def send_protocol_file(
     request: Request,
     port: str,
@@ -841,6 +1079,7 @@ async def cancel_protocol_file(request: Request, transfer_id: str):
 
 
 @app.post("/api/transfer/receive")
+@_serialized_port_operation
 async def receive_protocol_file(
     request: Request,
     port: str,
@@ -913,6 +1152,7 @@ async def receive_protocol_file(
 
 
 @app.post("/api/transfer/receive-batch")
+@_serialized_port_operation
 async def receive_protocol_batch(
     request: Request,
     port: str,

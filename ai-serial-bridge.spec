@@ -3,7 +3,7 @@
 AI Serial Bridge 桌面应用打包配置 (PyInstaller, onedir)。
 
 构建步骤：
-  1. 先构建前端：  cd frontend && npm install && npm run build
+  1. 先构建前端：  cd frontend && npm ci && npm run build
   2. 安装依赖：    pip install -r backend/requirements-desktop.txt pyinstaller
   3. 执行打包：    pyinstaller ai-serial-bridge.spec
   4. 产物目录：    dist/"AI Serial Bridge"/
@@ -25,11 +25,13 @@ a = Analysis(
     hiddenimports=[
         # 后端模块（desktop.py 经 sys.path 动态导入，需显式声明）
         'main',
+        'automations',
         'serial_manager',
         'leases',
         'log_store',
         'transfers',
         'cryptography.fernet',
+        'regex',
         # uvicorn 运行时按需加载的子模块
         'uvicorn.logging',
         'uvicorn.loops',
