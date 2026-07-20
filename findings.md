@@ -1,5 +1,13 @@
 # Findings & Decisions
 
+## Release Documentation Audit (2026-07-20)
+- The project is source-installed; no PyPI package or installer artifact is currently published.
+- Quick Start previously started services before documenting dependency installation.
+- Desktop startup requires `frontend/dist/`; external MCP access to desktop mode requires an explicitly shared `AI_SERIAL_TOKEN`.
+- Loopback MCP requests may require `NO_PROXY=127.0.0.1,localhost` when a system proxy is active.
+- The MCP server exposes 19 tools; both READMEs still documented 13 and omitted automation tools.
+- Project trees and contributor commands were stale, including invalid working-directory transitions.
+
 ## Requirements
 - Finish every remaining priority in `ROADMAP.md`.
 - Add device health rules, command macros, and scheduled diagnostics.

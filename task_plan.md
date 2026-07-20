@@ -4,7 +4,7 @@
 Complete the remaining roadmap: device health rules, command macros, scheduled diagnostics, encrypted-log key migration, COM17 hardware verification, documentation, and a final verified commit.
 
 ## Current Phase
-Phase 7: Final Verification and Delivery
+Phase 8: Release Documentation and Publishing
 
 ## Phases
 
@@ -42,6 +42,13 @@ Phase 7: Final Verification and Delivery
 - [x] Run full backend/frontend/build/E2E/MCP/hardware verification.
 - [x] Update all contributor/security/roadmap documentation.
 - [x] Commit without touching `.claude/settings.json`.
+- **Status:** complete
+
+### Phase 8: Release Documentation and Publishing
+- [x] Audit source, MCP, desktop, and contributor installation instructions.
+- [x] Synchronize the 19-tool MCP inventory and current project structure.
+- [x] Verify dependency resolution, backend/frontend tests, build, E2E, and audit.
+- [x] Prepare the verified documentation corrections and confirm the remote target branch.
 - **Status:** complete
 
 ## Key Decisions

@@ -75,7 +75,7 @@ Students learn embedded systems by talking to their Arduino or Micro:bit in natu
 
 ## Features
 
-- **AI Direct Serial Control**: MCP agents get 13 tools for serial control, leases, history, and protocol transfers
+- **AI Direct Serial Control**: MCP agents get 19 tools for serial control, leases, history, transfers, and automations
 - **Single-Writer Safety**: One client owns the renewable write lease while other Web UI and MCP clients remain read-only observers
 - **Lossless Hex Pipeline**: Hex view and export consume exact raw receive chunks, preserving CR/LF and arbitrary binary bytes
 - **Web UI Terminal**: xterm.js-based terminal with syntax highlighting, scrollback, and full ANSI support
@@ -121,10 +121,33 @@ The MCP Server does not own serial hardware directly. Instead, it proxies to `ma
 
 ## Quick Start (Recommended)
 
-Use `manager.py` to manage all services with one command:
+AI Serial Bridge is currently installed from source; it is not published as a PyPI package. Requirements are Python 3.10+, Node.js 20+, and npm.
 
 ```bash
+git clone https://github.com/jingza1024/AI_Serial_Bridge.git
 cd AI_Serial
+python -m venv .venv
+```
+
+Activate on PowerShell:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Activate on Linux/macOS:
+
+```bash
+source .venv/bin/activate
+```
+
+```bash
+# Install the Web backend, MCP proxy, and frontend
+python -m pip install --upgrade pip
+python -m pip install -r backend/requirements.txt -r backend/requirements-mcp.txt
+cd frontend
+npm ci
+cd ..
 
 # Start all services (backend + frontend)
 python manager.py start
@@ -143,21 +166,55 @@ python manager.py restart
 
 After starting, visit: http://localhost:5173
 
+## Installation Profiles
+
+Choose only the dependencies needed for the intended runtime:
+
+| Profile | Install command | Additional step |
+|---------|-----------------|-----------------|
+| Web backend | `python -m pip install -r backend/requirements.txt` | Build or run the Vue frontend |
+| MCP client proxy | `python -m pip install -r backend/requirements-mcp.txt` | The Web backend must also be running |
+| Desktop GUI | `python -m pip install -r backend/requirements-desktop.txt` | Run `npm ci && npm run build` in `frontend/` |
+| Contributor / packaging | `python -m pip install -r backend/requirements-dev.txt` | Includes backend, MCP, desktop, pytest, and PyInstaller |
+
+### Desktop GUI
+
+The desktop shell serves the production frontend bundle, so build it before launching:
+
+```bash
+python -m pip install -r backend/requirements-desktop.txt
+cd frontend
+npm ci
+npm run build
+cd ..
+python desktop.py
+```
+
+Desktop mode generates a random authentication token when `AI_SERIAL_TOKEN` is unset. To connect an external MCP client to the same desktop backend, set `AI_SERIAL_TOKEN` before launching `desktop.py` and pass the same value to the MCP process.
+
+### Build the Desktop Distribution
+
+```bash
+python -m pip install -r backend/requirements-dev.txt
+cd frontend
+npm ci
+npm run build
+cd ..
+pyinstaller ai-serial-bridge.spec
+```
+
+The onedir application is written to `dist/AI Serial Bridge/`. The packaged desktop does not embed the MCP stdio proxy; configure AI clients to run `backend/mcp_server.py` from a source checkout with the MCP requirements installed.
+
 ## Manual Start
 
 ### 1. Install Dependencies
 
 ```bash
-# Python backend
-cd backend
-pip install -r requirements.txt
-
-# MCP proxy (required when configuring an AI agent)
-pip install -r requirements-mcp.txt
-
-# Node frontend
-cd ../frontend
-npm install
+# From the repository root
+python -m pip install -r backend/requirements.txt
+cd frontend
+npm ci
+cd ..
 ```
 
 ### 2. Start Backend
@@ -170,6 +227,8 @@ python main.py
 Backend runs at http://localhost:8000
 
 ### 3. Start Frontend
+
+In a second terminal opened at the repository root:
 
 ```bash
 cd frontend
@@ -219,6 +278,8 @@ python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
 ## MCP Configuration
 
 > **Prerequisite**: Ensure the backend service is running (`python main.py` or `python manager.py start`), because the MCP Server proxies to `localhost:8000` via HTTP.
+
+If a system proxy intercepts loopback traffic, set `NO_PROXY=127.0.0.1,localhost` (and `no_proxy` on case-sensitive environments) for the MCP process. When authentication is enabled, the MCP process must receive the same `AI_SERIAL_TOKEN` as the backend.
 
 All paths below are examples. Replace `<YOUR_PROJECT_PATH>` with your actual installation directory.
 
@@ -575,6 +636,11 @@ Once MCP is configured, the AI automatically gains the following tools:
 | `serial_receive_protocol_file` | Receive XMODEM/YMODEM to a local path | `port`, `output_path`, optional size/timeouts |
 | `serial_receive_ymodem_batch` | Receive a YMODEM batch, verify SHA-256, and write a manifest | `port`, `output_directory`, optional overwrite/timeouts |
 | `serial_cancel_transfer` | Cancel an active protocol transfer | `transfer_id` (required) |
+| `serial_list_macros` | List configured command macros | None |
+| `serial_run_macro` | Run a configured macro and return device output | `port`, `macro_id`, optional `run_id` |
+| `serial_cancel_macro` | Cancel a macro started by this MCP client | `run_id` (required) |
+| `serial_get_health` | Read recent health-rule events | Optional `port`, `limit` |
+| `serial_get_diagnostic_schedules` | List diagnostic schedules and last-run status | None |
 
 > **Note**: All operation tools (write/close/write_then_read) require a `port`. If only one port is open, the tool will auto-infer it. If multiple ports are open, you must explicitly pass the `port` parameter.
 
@@ -602,6 +668,7 @@ AI_Serial/
 ├── backend/
 │   ├── main.py             # FastAPI + WebSocket service
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP proxy)
+│   ├── automations.py      # Health rules, macros, and schedule runtime
 │   ├── serial_manager.py   # Multi-port serial manager
 │   ├── leases.py           # Per-port single-writer leases
 │   ├── log_store.py        # Rotating persistent JSONL logs
@@ -613,6 +680,7 @@ AI_Serial/
 │   └── src/
 │       ├── App.vue
 │       ├── components/
+│       │   ├── automation/ # Automation dialog and panels
 │       │   ├── AuthDialog.vue
 │       │   ├── LogBrowserDialog.vue
 │       │   ├── LogSessionList.vue
@@ -620,6 +688,7 @@ AI_Serial/
 │       │   ├── TerminalToolbar.vue
 │       │   └── TerminalPanel.vue
 │       ├── composables/
+│       │   ├── useAutomations.ts
 │       │   ├── useSerial.ts
 │       │   └── useLocale.ts
 │       ├── locales/
@@ -639,6 +708,9 @@ AI_Serial/
 │   ├── opencode_mcp.json
 │   ├── codex_config.toml
 │   └── zed_settings.json
+├── scripts/
+│   ├── rotate_log_key.py           # Offline encrypted-log migration
+│   └── test_hardware_automation.py # Authenticated read-only MCP probe
 ├── assets/
 │   └── screenshots/        # Project screenshots for README
 ├── .github/

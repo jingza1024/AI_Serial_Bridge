@@ -10,10 +10,8 @@
 ## Build, Test, and Development Commands
 
 ```bash
-pip install -r backend/requirements.txt
-pip install -r backend/requirements-mcp.txt
-pip install -r backend/requirements-dev.txt
-cd frontend && npm install
+python -m pip install -r backend/requirements-dev.txt # full contributor environment
+cd frontend && npm ci
 python manager.py start                 # backend + Vite development server
 python manager.py status                # report managed service state
 python -m pytest backend/tests          # run backend regression tests
@@ -29,7 +27,7 @@ python desktop.py                       # run the desktop shell in development
 pyinstaller ai-serial-bridge.spec       # create the desktop distribution
 ```
 
-Run `python manager.py stop` when finished.
+Build `frontend/dist/` before running `desktop.py` or PyInstaller. Run `python manager.py stop` when finished with managed development services.
 
 ## Coding Style & Naming Conventions
 

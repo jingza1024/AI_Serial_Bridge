@@ -5,12 +5,13 @@
 ## 前置条件
 
 - Python 3.10+
-- Node.js 18+ 与 npm
-- Windows / macOS / Linux 桌面环境
-- 已安装后端依赖：
+- Node.js 20+ 与 npm
+- Windows 10/11 与 Microsoft Edge WebView2 Runtime
+- 当前 `ai-serial-bridge.spec` 面向 Windows WinForms；macOS/Linux 需要调整 pywebview 平台后端和 PyInstaller 配置
+- 已安装完整打包依赖：
 
   ```bash
-  pip install -r backend/requirements-desktop.txt
+  python -m pip install -r backend/requirements-dev.txt
   ```
 
 ## 1. 构建前端
@@ -19,23 +20,17 @@
 
 ```bash
 cd frontend
-npm install
+npm ci
 npm run build          # 产物输出到 frontend/dist
 cd ..
 ```
 
-## 2. 安装打包工具
-
-```bash
-pip install pyinstaller
-```
-
-## 3. 执行打包
+## 2. 执行打包
 
 在项目根目录执行：
 
 ```bash
-pyinstaller ai-serial-bridge.spec
+python -m PyInstaller ai-serial-bridge.spec
 ```
 
 - 产物目录：`dist/AI Serial Bridge/`
@@ -57,7 +52,7 @@ pyinstaller ai-serial-bridge.spec
 python desktop.py
 ```
 
-若 `frontend/dist` 不存在会自动回退到 Vite 开发服务器（`http://localhost:5173`，需先 `npm run dev`）。
+若 `frontend/dist` 不存在，开发模式会回退到 Vite 开发服务器（`http://localhost:5173`）；此时必须先在另一个终端执行 `cd frontend && npm run dev`，并确保后端端口 8000 可用。
 
 ## 访问鉴权
 
@@ -67,9 +62,10 @@ python desktop.py
 
 设置环境变量后启动打包应用，后端将要求 token：
 
-```bash
+```powershell
 # Windows (PowerShell)
-$env:AI_SERIAL_TOKEN="your-random-secret"; ".\AI Serial Bridge.exe"
+$env:AI_SERIAL_TOKEN="your-random-secret"
+& ".\AI Serial Bridge.exe"
 ```
 
-固定 token 同样只用于创建浏览器会话。远程部署要求 TLS，并应阅读 `SECURITY.md`。
+固定 token 用于浏览器创建 HttpOnly 会话，也供外部 MCP 进程通过 Bearer 认证。连接同一桌面后端时，必须把相同的 `AI_SERIAL_TOKEN` 和实际 `AI_SERIAL_API_URL` 传给 MCP 进程。远程部署要求 TLS，并应阅读 `SECURITY.md`。

@@ -75,7 +75,7 @@ AI Serial Bridge 是一个基于 **Model Context Protocol (MCP)** 的桥接服�
 
 ## 功能
 
-- **AI 直接控制串口**：MCP 提供 13 个串口控制、租约、历史和协议传输工具
+- **AI 直接控制串口**：MCP 提供 19 个串口控制、租约、历史、传输和自动化工具
 - **单写者保护**：一个客户端持有可续期写租约，其他 Web UI 与 MCP 客户端保持只读观察
 - **无损 Hex 管线**：Hex 显示与导出使用精确原始接收块，完整保留 CR/LF 和任意二进制字节
 - **Web UI 终端**：基于 xterm.js，支持语法高亮、滚动回溯、完整 ANSI 转义序列
@@ -119,11 +119,33 @@ MCP Server 不直接持有串口硬件，而是通过 HTTP 代理到 `main.py`�
 
 ## 快速开始（推荐）
 
-使用 `manager.py` 一键管理所有服务：
+AI Serial Bridge 当前通过源码安装，不是 PyPI 软件包。运行环境需要 Python 3.10+、Node.js 20+ 和 npm。
 
 ```bash
-# 进入项目目录
+git clone https://github.com/jingza1024/AI_Serial_Bridge.git
 cd AI_Serial
+python -m venv .venv
+```
+
+PowerShell 激活命令：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+Linux/macOS 激活命令：
+
+```bash
+source .venv/bin/activate
+```
+
+```bash
+# 安装 Web 后端、MCP 代理和前端依赖
+python -m pip install --upgrade pip
+python -m pip install -r backend/requirements.txt -r backend/requirements-mcp.txt
+cd frontend
+npm ci
+cd ..
 
 # 启动所有服务（后端 + 前端）
 python manager.py start
@@ -142,21 +164,55 @@ python manager.py restart
 
 启动后访问：http://localhost:5173
 
+## 安装配置
+
+根据运行目标选择依赖：
+
+| 配置 | 安装命令 | 额外步骤 |
+|------|----------|----------|
+| Web 后端 | `python -m pip install -r backend/requirements.txt` | 构建或启动 Vue 前端 |
+| MCP 客户端代理 | `python -m pip install -r backend/requirements-mcp.txt` | 仍需启动 Web 后端 |
+| 桌面 GUI | `python -m pip install -r backend/requirements-desktop.txt` | 在 `frontend/` 执行 `npm ci && npm run build` |
+| 开发 / 打包 | `python -m pip install -r backend/requirements-dev.txt` | 包含后端、MCP、桌面、pytest 和 PyInstaller |
+
+### 桌面 GUI
+
+桌面壳加载生产前端资源，启动前需要先构建：
+
+```bash
+python -m pip install -r backend/requirements-desktop.txt
+cd frontend
+npm ci
+npm run build
+cd ..
+python desktop.py
+```
+
+未设置 `AI_SERIAL_TOKEN` 时，桌面模式每次启动都会生成随机鉴权 token。若要让外部 MCP 客户端连接同一个桌面后端，必须在启动 `desktop.py` 前设置 `AI_SERIAL_TOKEN`，并将相同值传给 MCP 进程。
+
+### 构建桌面发行版
+
+```bash
+python -m pip install -r backend/requirements-dev.txt
+cd frontend
+npm ci
+npm run build
+cd ..
+pyinstaller ai-serial-bridge.spec
+```
+
+onedir 产物位于 `dist/AI Serial Bridge/`。桌面发行版不内置 MCP stdio 代理；请在源码目录安装 MCP 依赖，并让 AI 客户端运行 `backend/mcp_server.py`。
+
 ## 手动启动
 
 ### 1. 安装依赖
 
 ```bash
-# Python 后端
-cd backend
-pip install -r requirements.txt
-
-# MCP 代理（配置 AI Agent 时需要）
-pip install -r requirements-mcp.txt
-
-# Node 前端
-cd ../frontend
-npm install
+# 从仓库根目录执行
+python -m pip install -r backend/requirements.txt
+cd frontend
+npm ci
+cd ..
 ```
 
 ### 2. 启动后端
@@ -169,6 +225,8 @@ python main.py
 后端运行在 http://localhost:8000
 
 ### 3. 启动前端
+
+在仓库根目录打开第二个终端：
 
 ```bash
 cd frontend
@@ -207,6 +265,8 @@ python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
 ## MCP 配置
 
 > **前提条件**: 确保后端服务已启动 (`python main.py` 或 `python manager.py start`)，因为 MCP Server 通过 HTTP 代理到 `localhost:8000`。
+
+如果系统代理会拦截回环流量，请为 MCP 进程设置 `NO_PROXY=127.0.0.1,localhost`（区分大小写的环境同时设置 `no_proxy`）。启用鉴权时，MCP 进程必须使用与后端相同的 `AI_SERIAL_TOKEN`。
 
 以下配置中所有路径均为示例，请将 `<YOUR_PROJECT_PATH>` 替换为你的实际安装目录。
 
@@ -561,7 +621,13 @@ codex mcp add ai-serial-bridge --env AI_SERIAL_API_URL=http://127.0.0.1:8000 --e
 | `serial_release_lease` | 释放 MCP 写权限 | `port`(必填) |
 | `serial_send_protocol_file` | 使用 XMODEM/YMODEM 发送本地文件 | `port`, `file_path`，可选协议/超时 |
 | `serial_receive_protocol_file` | 接收 XMODEM/YMODEM 到本地路径 | `port`, `output_path`，可选大小/超时 |
+| `serial_receive_ymodem_batch` | 使用 YMODEM 批量接收，校验 SHA-256 并写入清单 | `port`, `output_directory`，可选覆盖/超时 |
 | `serial_cancel_transfer` | 取消协议传输 | `transfer_id`(必填) |
+| `serial_list_macros` | 列出已配置的命令宏 | 无 |
+| `serial_run_macro` | 运行命令宏并返回设备输出 | `port`, `macro_id`，可选 `run_id` |
+| `serial_cancel_macro` | 取消当前 MCP 客户端发起的命令宏 | `run_id`(必填) |
+| `serial_get_health` | 读取最近的健康规则事件 | 可选 `port`, `limit` |
+| `serial_get_diagnostic_schedules` | 列出诊断计划和最近运行状态 | 无 |
 
 > **注意**: 所有涉及操作的工具（write/close/write_then_read）都需要指定 `port`。如果只打开了一个串口，工具会自动推断，无需手动指定。如果同时打开了多个串口，必须明确传入 `port` 参数。
 
@@ -589,6 +655,7 @@ AI_Serial/
 ├── backend/
 │   ├── main.py             # FastAPI + WebSocket 服务
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP 代理)
+│   ├── automations.py      # 健康规则、命令宏和计划运行时
 │   ├── serial_manager.py   # 多串口管理器
 │   ├── leases.py           # 单写者端口租约
 │   ├── log_store.py        # 轮转持久 JSONL 日志
@@ -600,11 +667,13 @@ AI_Serial/
 │   └── src/
 │       ├── App.vue
 │       ├── components/
+│       │   ├── automation/ # 自动化弹窗和面板
 │       │   ├── AuthDialog.vue
 │       │   ├── PortDialog.vue
 │       │   ├── TerminalToolbar.vue
 │       │   └── TerminalPanel.vue
 │       ├── composables/
+│       │   ├── useAutomations.ts
 │       │   ├── useSerial.ts
 │       │   └── useLocale.ts
 │       ├── locales/
@@ -624,6 +693,9 @@ AI_Serial/
 │   ├── opencode_mcp.json
 │   ├── codex_config.toml
 │   └── zed_settings.json
+├── scripts/
+│   ├── rotate_log_key.py           # 离线加密日志迁移
+│   └── test_hardware_automation.py # 认证只读 MCP 实机检查
 ├── assets/
 │   └── screenshots/        # 项目截图
 ├── .github/

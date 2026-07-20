@@ -1,5 +1,21 @@
 # Progress Log
 
+## Session: 2026-07-20
+
+### Phase 8: Release Documentation and Publishing
+- **Status:** complete
+- Actions:
+  - Added source-install prerequisites and separate Web, MCP, desktop, and contributor profiles.
+  - Documented desktop frontend build requirements, MCP token sharing, and loopback proxy exclusions.
+  - Updated English/Chinese MCP inventories to all 19 tools and refreshed project trees.
+  - Corrected contributor working-directory and test commands.
+  - Added `automations` and `regex` to explicit PyInstaller hidden imports.
+- Verification:
+  - Python dependency dry-run and `npm ci --dry-run` pass.
+  - Backend: 100 tests pass; frontend: 13 tests pass.
+  - Production build and Playwright 3/3 pass.
+  - Dependency audit reports 0 vulnerabilities.
+
 ## Session: 2026-07-17
 
 ### Phase 1: Architecture Discovery
