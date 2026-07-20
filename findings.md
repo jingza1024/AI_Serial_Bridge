@@ -1,5 +1,25 @@
 # Findings & Decisions
 
+## Python 3.10 CI Failure (2026-07-20)
+- Earlier CI runs failed while collecting `backend/tests/test_api.py`; frontend jobs passed.
+- GitHub Actions uses Python 3.10, while the development machine uses Python 3.13.
+- `threading.Lock` became a class in Python 3.13 but is a factory function in Python 3.10, so `threading.Lock | None` raises `TypeError` during module import.
+- The Starlette `TestClient` deprecation is a warning and does not cause the failed job.
+- Approved fix: add `from __future__ import annotations` after the module docstring so type hints are not evaluated during import.
+- Python 3.10.20 reproduces the original annotation `TypeError`; with postponed annotations the same signature is stored as strings and imports safely.
+- Python 3.10 focused API verification passes 32 tests. Full GitHub Ubuntu CI remains the authority for MCP dependencies because the local Windows-only `pywin32` wheel mirror timed out.
+- GitHub Actions run `29721719293` verified the fix on the repository CI matrix; backend and frontend jobs both passed.
+
+## Serial Reopen Regression (2026-07-20)
+- User reproduction: open COM17 at 115200 in the desktop app, interact successfully, close the port, reopen it, then type `ls`.
+- After reopen, the desktop terminal shows no response, but another serial tool later displays the queued `ls` result after Enter is sent.
+- The command reaches the Linux device, so the initial fault boundary is receive/read delivery or display subscription after reopen rather than serial write.
+- Screenshot 1 shows COM17 reported connected and writable after reopen while the terminal remains at the reconnect status text.
+- Screenshot 2 confirms the Linux shell and serial link remain functional outside the application.
+- Root cause: each reopened backend `SerialManager` restarts message/raw sequence numbers at 1, while the module-level Vue store retained the previous port arrays and deduplicated by sequence.
+- Fix boundary: `useSerial.ts` clears short-lived per-port message, raw, settings, lease, and open-state caches only after the authoritative `open_ports` update confirms a port closed. Persistent backend history is unchanged.
+- Regression coverage: Vitest covers UI close/reopen and external-client close/reopen with reused sequence numbers.
+
 ## Release Documentation Audit (2026-07-20)
 - The project is source-installed; no PyPI package or installer artifact is currently published.
 - Quick Start previously started services before documenting dependency installation.

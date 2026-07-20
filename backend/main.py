@@ -4,6 +4,8 @@ AI Serial Bridge - FastAPI Backend
 支持多串口同时连接
 """
 
+from __future__ import annotations
+
 import asyncio
 import base64
 import hmac

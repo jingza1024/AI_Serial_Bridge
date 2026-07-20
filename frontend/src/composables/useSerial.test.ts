@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { useSerial } from './useSerial'
+import { useSerial, type SerialMessage } from './useSerial'
 
 afterEach(() => {
+  useSerial().disconnect()
   vi.restoreAllMocks()
   vi.unstubAllGlobals()
 })
@@ -37,5 +38,94 @@ describe('useSerial batch receive', () => {
     )
     expect(downloaded).toBe('ymodem-COM14-batch.zip')
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:batch')
+  })
+})
+
+describe('useSerial port session lifecycle', () => {
+  class FakeWebSocket {
+    static OPEN = 1
+    static instances: FakeWebSocket[] = []
+    readyState = 1
+    sent: string[] = []
+    onopen: (() => void) | null = null
+    onmessage: ((event: MessageEvent) => void) | null = null
+    onclose: ((event: CloseEvent) => void) | null = null
+    onerror: ((event: Event) => void) | null = null
+
+    constructor() {
+      FakeWebSocket.instances.push(this)
+    }
+
+    send(value: string) {
+      this.sent.push(value)
+    }
+
+    close() {
+      this.readyState = 3
+      this.onclose?.({ code: 1000, reason: '' } as CloseEvent)
+    }
+  }
+
+  function message(sequence: number, content: string): SerialMessage {
+    return {
+      type: 'serial_message',
+      source: 'device',
+      content,
+      sequence,
+      timestamp: sequence,
+      time_str: '',
+    }
+  }
+
+  async function connectedSerial() {
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ auth_required: false }),
+    }))
+    const serial = useSerial()
+    await serial.connect()
+    const socket = FakeWebSocket.instances.at(-1)
+    expect(socket).toBeDefined()
+    socket?.onopen?.()
+    return { serial, socket: socket as FakeWebSocket }
+  }
+
+  it('accepts new sequence numbers after the UI closes and reopens a port', async () => {
+    const { serial, socket } = await connectedSerial()
+    const received: string[] = []
+    serial.onMessage('COM17', msg => received.push(msg.content))
+
+    socket.onmessage?.({ data: JSON.stringify({
+      type: 'open_ports',
+      ports: [{ port: 'COM17', baudrate: 115200, settings: {}, lease: null }],
+    }) } as MessageEvent)
+    socket.onmessage?.({ data: JSON.stringify({ ...message(1, 'first\r\n'), port: 'COM17' }) } as MessageEvent)
+    serial.closePort('COM17')
+    socket.onmessage?.({ data: JSON.stringify({ type: 'open_ports', ports: [] }) } as MessageEvent)
+    socket.onmessage?.({ data: JSON.stringify({
+      type: 'open_ports',
+      ports: [{ port: 'COM17', baudrate: 115200, settings: {}, lease: null }],
+    }) } as MessageEvent)
+    socket.onmessage?.({ data: JSON.stringify({ ...message(1, 'second\r\n'), port: 'COM17' }) } as MessageEvent)
+
+    expect(received).toEqual(['first\r\n', 'second\r\n'])
+  })
+
+  it('clears cached messages when another client closes the port', async () => {
+    const { serial, socket } = await connectedSerial()
+    socket.onmessage?.({ data: JSON.stringify({
+      type: 'open_ports',
+      ports: [{ port: 'COM18', baudrate: 115200, settings: {}, lease: null }],
+    }) } as MessageEvent)
+    socket.onmessage?.({ data: JSON.stringify({ ...message(1, 'first\r\n'), port: 'COM18' }) } as MessageEvent)
+    socket.onmessage?.({ data: JSON.stringify({ type: 'open_ports', ports: [] }) } as MessageEvent)
+    socket.onmessage?.({ data: JSON.stringify({
+      type: 'open_ports',
+      ports: [{ port: 'COM18', baudrate: 115200, settings: {}, lease: null }],
+    }) } as MessageEvent)
+    socket.onmessage?.({ data: JSON.stringify({ ...message(1, 'second\r\n'), port: 'COM18' }) } as MessageEvent)
+
+    expect(serial.getHistory('COM18', 0).map(item => item.content)).toEqual(['second\r\n'])
   })
 })

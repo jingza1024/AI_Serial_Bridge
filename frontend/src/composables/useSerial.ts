@@ -250,6 +250,15 @@ function normalizeOpenPorts(raw: unknown): OpenPortDetail[] {
   })
 }
 
+function clearPortSession(port: string) {
+  delete messages.value[port]
+  delete rawChunks.value[port]
+  delete isSerialOpen.value[port]
+  delete portBaudrates.value[port]
+  delete portSettings.value[port]
+  delete leases.value[port]
+}
+
 function appendSerialMessage(port: string, msg: SerialMessage) {
   if (!messages.value[port]) messages.value[port] = []
   const existing = messages.value[port]
@@ -346,6 +355,10 @@ async function connect(): Promise<void> {
       }
       if (data.type === 'open_ports') {
         const list = normalizeOpenPorts(data.ports)
+        const nextPorts = new Set(list.map(item => item.port))
+        for (const port of openPorts.value) {
+          if (!nextPorts.has(port)) clearPortSession(port)
+        }
         openPorts.value = list.map(item => item.port)
         portBaudrates.value = Object.fromEntries(list.map(item => [item.port, item.baudrate]))
         portSettings.value = Object.fromEntries(list.map(item => [item.port, item.settings]))

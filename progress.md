@@ -2,6 +2,45 @@
 
 ## Session: 2026-07-20
 
+### Phase 10: Python 3.10 CI Compatibility
+- **Status:** complete
+- Evidence:
+  - Backend CI exits during test collection at `backend/main.py:334`.
+  - Frontend CI jobs pass.
+  - Local runtime is Python 3.13; GitHub Actions is Python 3.10.
+- Approved action:
+  - Defer annotations in `backend/main.py`, verify on Python 3.10, and push a focused fix.
+- Environment:
+  - `uv` installed Python 3.10.20 successfully.
+  - Full isolated dependency setup was blocked by repeated timeout downloading `pyserial` from the configured PyPI mirror; GitHub CI remains the full Python 3.10 verifier.
+  - A second full attempt reached Windows-only `pywin32` and timed out; the focused environment then matched the failing API job without MCP platform dependencies.
+- Fix:
+  - Added `from __future__ import annotations` to `backend/main.py` without changing runtime behavior.
+- Verification:
+  - Python 3.10 annotation reproduction changed from the exact CI `TypeError` to deferred string annotations.
+  - Python 3.10 `test_api.py`: 32 passed, one existing Starlette deprecation warning.
+  - Local backend: 100 passed.
+  - Frontend: 15 passed; production build passed; Playwright 3/3 passed.
+- Publishing:
+  - Pushed `fb5caaa` to `codex/final-optimization` through a reachable official GitHub node.
+  - GitHub Actions run `29721719293` completed successfully: backend and frontend jobs passed.
+
+### Phase 9: Serial Reopen Receive Regression
+- **Status:** complete
+- Evidence:
+  - COM17 at 115200 works on first desktop connection.
+  - After close/reopen, writes still reach the Linux device but receive output is not shown.
+  - A second serial terminal reveals the queued command output, isolating the first investigation to read delivery/UI subscription lifecycle.
+- Root cause:
+  - Reopened backend sessions restart per-port sequence numbers while Vue retained old session caches and dropped reused sequence values as duplicates.
+- Fix:
+  - Clear per-port transient caches when the authoritative `open_ports` update confirms closure, while preserving persistent server-side history.
+- Verification:
+  - Focused lifecycle tests: 3 passed.
+  - Full frontend: 15 tests passed, production build passed, Playwright 3/3 passed.
+  - Backend: 100 tests passed.
+  - COM17@115200 authenticated hardware probe passed and released the port.
+
 ### Phase 8: Release Documentation and Publishing
 - **Status:** complete
 - Actions:
