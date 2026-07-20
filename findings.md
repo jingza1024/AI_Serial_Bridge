@@ -1,13 +1,14 @@
 # Findings & Decisions
 
 ## Python 3.10 CI Failure (2026-07-20)
-- All five CI runs fail while collecting `backend/tests/test_api.py`; frontend jobs pass.
+- Earlier CI runs failed while collecting `backend/tests/test_api.py`; frontend jobs passed.
 - GitHub Actions uses Python 3.10, while the development machine uses Python 3.13.
 - `threading.Lock` became a class in Python 3.13 but is a factory function in Python 3.10, so `threading.Lock | None` raises `TypeError` during module import.
 - The Starlette `TestClient` deprecation is a warning and does not cause the failed job.
 - Approved fix: add `from __future__ import annotations` after the module docstring so type hints are not evaluated during import.
 - Python 3.10.20 reproduces the original annotation `TypeError`; with postponed annotations the same signature is stored as strings and imports safely.
 - Python 3.10 focused API verification passes 32 tests. Full GitHub Ubuntu CI remains the authority for MCP dependencies because the local Windows-only `pywin32` wheel mirror timed out.
+- GitHub Actions run `29721719293` verified the fix on the repository CI matrix; backend and frontend jobs both passed.
 
 ## Serial Reopen Regression (2026-07-20)
 - User reproduction: open COM17 at 115200 in the desktop app, interact successfully, close the port, reopen it, then type `ls`.

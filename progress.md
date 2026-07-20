@@ -3,7 +3,7 @@
 ## Session: 2026-07-20
 
 ### Phase 10: Python 3.10 CI Compatibility
-- **Status:** in progress
+- **Status:** complete
 - Evidence:
   - Backend CI exits during test collection at `backend/main.py:334`.
   - Frontend CI jobs pass.
@@ -22,7 +22,8 @@
   - Local backend: 100 passed.
   - Frontend: 15 passed; production build passed; Playwright 3/3 passed.
 - Publishing:
-  - Two HTTPS push attempts reached GitHub but hit the configured 30-second low-speed threshold; retrying through a third official node without that threshold.
+  - Pushed `fb5caaa` to `codex/final-optimization` through a reachable official GitHub node.
+  - GitHub Actions run `29721719293` completed successfully: backend and frontend jobs passed.
 
 ### Phase 9: Serial Reopen Receive Regression
 - **Status:** complete

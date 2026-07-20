@@ -4,7 +4,7 @@
 Complete the remaining roadmap: device health rules, command macros, scheduled diagnostics, encrypted-log key migration, COM17 hardware verification, documentation, and a final verified commit.
 
 ## Current Phase
-Phase 10: Python 3.10 CI Compatibility
+Phase 10: Python 3.10 CI Compatibility (complete)
 
 ## Phases
 
@@ -62,8 +62,8 @@ Phase 10: Python 3.10 CI Compatibility
 - [x] Reproduce the backend import failure under Python 3.10.
 - [x] Defer runtime annotation evaluation in `backend/main.py`.
 - [x] Run Python 3.10 and full local verification.
-- [ ] Commit, push, and confirm green CI.
-- **Status:** in_progress
+- [x] Commit, push, and confirm green CI.
+- **Status:** complete
 
 ## Key Decisions
 | Decision | Rationale |
