@@ -2,6 +2,28 @@
 
 ## Session: 2026-07-20
 
+### Phase 10: Python 3.10 CI Compatibility
+- **Status:** in progress
+- Evidence:
+  - Backend CI exits during test collection at `backend/main.py:334`.
+  - Frontend CI jobs pass.
+  - Local runtime is Python 3.13; GitHub Actions is Python 3.10.
+- Approved action:
+  - Defer annotations in `backend/main.py`, verify on Python 3.10, and push a focused fix.
+- Environment:
+  - `uv` installed Python 3.10.20 successfully.
+  - Full isolated dependency setup was blocked by repeated timeout downloading `pyserial` from the configured PyPI mirror; GitHub CI remains the full Python 3.10 verifier.
+  - A second full attempt reached Windows-only `pywin32` and timed out; the focused environment then matched the failing API job without MCP platform dependencies.
+- Fix:
+  - Added `from __future__ import annotations` to `backend/main.py` without changing runtime behavior.
+- Verification:
+  - Python 3.10 annotation reproduction changed from the exact CI `TypeError` to deferred string annotations.
+  - Python 3.10 `test_api.py`: 32 passed, one existing Starlette deprecation warning.
+  - Local backend: 100 passed.
+  - Frontend: 15 passed; production build passed; Playwright 3/3 passed.
+- Publishing:
+  - Two HTTPS push attempts reached GitHub but hit the configured 30-second low-speed threshold; retrying through a third official node without that threshold.
+
 ### Phase 9: Serial Reopen Receive Regression
 - **Status:** complete
 - Evidence:

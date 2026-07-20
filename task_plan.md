@@ -4,7 +4,7 @@
 Complete the remaining roadmap: device health rules, command macros, scheduled diagnostics, encrypted-log key migration, COM17 hardware verification, documentation, and a final verified commit.
 
 ## Current Phase
-Phase 9: Serial Reopen Receive Regression
+Phase 10: Python 3.10 CI Compatibility
 
 ## Phases
 
@@ -58,6 +58,13 @@ Phase 9: Serial Reopen Receive Regression
 - [x] Update regression documentation and run final verification.
 - **Status:** complete
 
+### Phase 10: Python 3.10 CI Compatibility
+- [x] Reproduce the backend import failure under Python 3.10.
+- [x] Defer runtime annotation evaluation in `backend/main.py`.
+- [x] Run Python 3.10 and full local verification.
+- [ ] Commit, push, and confirm green CI.
+- **Status:** in_progress
+
 ## Key Decisions
 | Decision | Rationale |
 |----------|-----------|
@@ -85,6 +92,11 @@ Phase 9: Serial Reopen Receive Regression
 | MCP lease test expected internal owner ID | 1 | Verified the public owner label returned by the MCP tool instead. |
 | Pathological regex blocked focused pytest | 1 | Added the `regex` engine with a 10 ms match timeout. |
 | Desktop COM17 receives no visible output after close/reopen | 1 | Cleared per-port session caches when `open_ports` confirms closure so reset sequence numbers are accepted. |
+| Python 3.10 CI cannot import `backend/main.py` | 1 | `threading.Lock` is a factory function before Python 3.13; defer annotation evaluation. |
+| Python 3.10 uv dependency environment timed out downloading `pyserial` | 1 | Do not repeat mirror install; reproduce the annotation directly and use GitHub CI for the complete 3.10 environment. |
+| Python 3.10 full MCP environment timed out downloading Windows `pywin32` | 1 | Switched to the exact failing API suite with backend dependencies and `httpx`; GitHub Ubuntu CI does not require `pywin32`. |
+| Focused Python 3.10 API environment lacked `httpx` | 1 | Added the CI-equivalent `httpx>=0.27` dependency; 32 API tests passed. |
+| Two GitHub Web nodes hit the 30-second Git low-speed threshold | 2 | Use a third official node without the aggressive threshold for the small push. |
 
 ## Notes
 - Re-read this file before major decisions.
