@@ -6,6 +6,7 @@ AI Serial Bridge 服务管理器
 import subprocess
 import sys
 import os
+import signal
 import time
 import json
 from pathlib import Path
@@ -13,11 +14,22 @@ from pathlib import Path
 # Windows 控制台 UTF-8 编码支持
 if sys.platform == "win32":
     try:
-        import io
-        sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
-        sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8")
-    except Exception:
+        sys.stdout.reconfigure(encoding="utf-8")
+        sys.stderr.reconfigure(encoding="utf-8")
+    except (AttributeError, OSError):
         pass
+
+IS_WINDOWS = sys.platform == "win32"
+# Windows 下 npm 是 npm.cmd；POSIX 下直接用 npm
+NPM_CMD = "npm.cmd" if IS_WINDOWS else "npm"
+
+
+def _new_proc_group_kwargs() -> dict:
+    """跨平台：将子进程放入独立进程组/会话，便于整组终止，并关闭 stdin。"""
+    if IS_WINDOWS:
+        return {"creationflags": subprocess.CREATE_NEW_PROCESS_GROUP, "stdin": subprocess.DEVNULL}
+    return {"start_new_session": True, "stdin": subprocess.DEVNULL}
+
 
 PROJECT_DIR = Path(__file__).parent.resolve()
 BACKEND_DIR = PROJECT_DIR / "backend"
@@ -29,54 +41,158 @@ FRONTEND_PORT = 5173
 
 
 def _save_pids(pids: dict):
-    with open(PID_FILE, "w", encoding="utf-8") as f:
+    temp_file = PID_FILE.with_suffix(".tmp")
+    with open(temp_file, "w", encoding="utf-8") as f:
         json.dump(pids, f)
+    temp_file.replace(PID_FILE)
 
 
 def _load_pids() -> dict:
     if not PID_FILE.exists():
         return {}
-    with open(PID_FILE, "r", encoding="utf-8") as f:
-        return json.load(f)
+    try:
+        with open(PID_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
 
 
 def _is_process_running(pid: int) -> bool:
     """检查进程是否还在运行"""
-    try:
-        import ctypes
-        kernel32 = ctypes.windll.kernel32
-        handle = kernel32.OpenProcess(1, False, pid)
-        if handle:
-            kernel32.CloseHandle(handle)
-            return True
+    if pid <= 0:
         return False
-    except Exception:
+    if IS_WINDOWS:
+        try:
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(1, False, pid)
+            if handle:
+                kernel32.CloseHandle(handle)
+                return True
+            return False
+        except Exception:
+            return False
+    # POSIX：os.kill(pid, 0) 不发送信号，仅做存在性检查
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # 进程存在但无权限发信号
+    except OSError:
         return False
 
 
 def _find_process_by_port(port: int) -> int | None:
     """通过端口查找进程PID"""
     try:
-        result = subprocess.run(
-            ["powershell", "-Command",
-             f"(Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue).OwningProcess"],
-            capture_output=True, text=True, timeout=5
-        )
-        pid_str = result.stdout.strip()
-        if pid_str and pid_str != "0":
-            return int(pid_str)
+        if IS_WINDOWS:
+            result = subprocess.run(
+                ["powershell", "-Command",
+                 f"(Get-NetTCPConnection -LocalPort {port} -ErrorAction SilentlyContinue).OwningProcess"],
+                capture_output=True, text=True, timeout=5
+            )
+            pid_str = result.stdout.strip()
+            if pid_str and pid_str != "0":
+                return int(pid_str)
+        else:
+            # POSIX：优先 lsof，回退 ss
+            for cmd in (["lsof", "-ti", f":{port}"], ["ss", "-tlnpH"]):
+                try:
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                except FileNotFoundError:
+                    continue
+                if cmd[0] == "lsof":
+                    out = result.stdout.strip().splitlines()
+                    if out and out[0].isdigit():
+                        return int(out[0])
+                else:  # ss
+                    for line in result.stdout.splitlines():
+                        if f":{port} " in line and "pid=" in line:
+                            pid_part = line.split("pid=", 1)[1]
+                            pid_str = "".join(c for c in pid_part if c.isdigit())
+                            if pid_str:
+                                return int(pid_str)
     except Exception:
         pass
     return None
 
 
+def _get_process_command(pid: int) -> str:
+    """读取进程命令行，仅用于验证 PID 是否属于本项目。"""
+    try:
+        if IS_WINDOWS:
+            result = subprocess.run(
+                [
+                    "powershell", "-NoProfile", "-Command",
+                    f'(Get-CimInstance Win32_Process -Filter "ProcessId = {pid}").CommandLine',
+                ],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            return result.stdout.strip()
+
+        proc_cmdline = Path(f"/proc/{pid}/cmdline")
+        if proc_cmdline.exists():
+            return proc_cmdline.read_bytes().replace(b"\0", b" ").decode("utf-8", "replace")
+        result = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        return result.stdout.strip()
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
+def _process_matches(pid: int, expected_marker: str) -> bool:
+    """确认 PID 命令行同时包含项目目录和预期入口，避免误杀。"""
+    command = _get_process_command(pid)
+    if not command:
+        return False
+    normalized = command.replace("\\", "/").lower()
+    project = str(PROJECT_DIR).replace("\\", "/").lower()
+    marker = expected_marker.replace("\\", "/").lower()
+    if project in normalized and marker in normalized:
+        return True
+    # npm.cmd 通常会转为 node + npm-cli.js，命令行不一定包含 cwd；PID 文件仍提供首要边界。
+    return marker == "run dev" and "run dev" in normalized and ("npm" in normalized or "vite" in normalized)
+
+
 def _kill_process_tree(pid: int):
     """终止进程及其子进程"""
     try:
-        subprocess.run(
-            ["taskkill", "/T", "/F", "/PID", str(pid)],
-            capture_output=True, timeout=10
-        )
+        if IS_WINDOWS:
+            subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(pid)],
+                capture_output=True, timeout=10
+            )
+        else:
+            # 先递归终止子进程，再终止父进程；先 SIGTERM 后 SIGKILL
+            try:
+                res = subprocess.run(
+                    ["pgrep", "-P", str(pid)],
+                    capture_output=True, text=True, timeout=5
+                )
+                child_pids = [int(x) for x in res.stdout.split() if x.isdigit()]
+            except (FileNotFoundError, Exception):
+                child_pids = []
+            for cpid in child_pids:
+                _kill_process_tree(cpid)
+            for sig in (signal.SIGTERM, signal.SIGKILL):
+                try:
+                    os.kill(pid, sig)
+                except ProcessLookupError:
+                    return
+                except Exception:
+                    break
+                time.sleep(0.2)
+                if not _is_process_running(pid):
+                    return
     except Exception as e:
         print(f"  终止 PID {pid} 失败: {e}")
 
@@ -88,47 +204,25 @@ def _stop_by_pids():
         return False
 
     stopped = False
-    for name, pid in pids.items():
+    for name, record in pids.items():
+        if isinstance(record, dict):
+            pid = int(record.get("pid", 0))
+            marker = str(record.get("command", ""))
+        else:
+            pid = int(record)
+            marker = str(BACKEND_DIR / "main.py") if name == "backend" else "npm"
         if _is_process_running(pid):
-            print(f"[STOP] 正在停止 {name} (PID: {pid})...")
-            _kill_process_tree(pid)
-            stopped = True
+            if marker and _process_matches(pid, marker):
+                print(f"[STOP] 正在停止 {name} (PID: {pid})...")
+                _kill_process_tree(pid)
+                stopped = True
+            else:
+                print(f"[WARN] 拒绝终止未通过身份校验的 {name} (PID: {pid})")
         else:
             print(f"[STOP] {name} (PID: {pid}) 已不在运行")
     
     PID_FILE.unlink(missing_ok=True)
     return stopped
-
-
-def _stop_by_ports():
-    """通过端口查找并停止服务"""
-    stopped = False
-    for port, name in [(BACKEND_PORT, "backend"), (FRONTEND_PORT, "frontend")]:
-        pid = _find_process_by_port(port)
-        if pid:
-            print(f"[STOP] 通过端口发现 {name} (PID: {pid}, port: {port})，正在终止...")
-            _kill_process_tree(pid)
-            stopped = True
-    return stopped
-
-
-def _stop_zombie_python():
-    """清理遗留的 mcp_server.py 或 main.py Python 进程"""
-    try:
-        result = subprocess.run(
-            ["powershell", "-Command",
-             "Get-WmiObject Win32_Process | Where-Object { $_.CommandLine -like '*main.py*' -or $_.CommandLine -like '*mcp_server.py*' } | Select-Object ProcessId,CommandLine"],
-            capture_output=True, text=True, timeout=10
-        )
-        lines = [l for l in result.stdout.strip().split('\n') if l.strip() and 'ProcessId' not in l and '---' not in l]
-        for line in lines:
-            parts = line.split(None, 1)
-            if parts and parts[0].isdigit():
-                pid = int(parts[0])
-                print(f"[STOP] 清理遗留 Python 进程 (PID: {pid})")
-                _kill_process_tree(pid)
-    except Exception:
-        pass
 
 
 def status():
@@ -137,15 +231,17 @@ def status():
     running = []
     
     # 检查PID文件中的进程
-    for name, pid in pids.items():
-        if _is_process_running(pid):
+    for name, record in pids.items():
+        pid = int(record.get("pid", 0)) if isinstance(record, dict) else int(record)
+        marker = str(record.get("command", "")) if isinstance(record, dict) else name
+        if _is_process_running(pid) and _process_matches(pid, marker):
             running.append(name)
     
     # 检查端口
     for port, name in [(BACKEND_PORT, "backend"), (FRONTEND_PORT, "frontend")]:
         pid = _find_process_by_port(port)
         if pid and name not in running:
-            running.append(f"{name}(port:{port})")
+            running.append(f"端口占用(非托管):{port}/PID:{pid}")
     
     if running:
         print(f"[STATUS] 运行中: {', '.join(running)}")
@@ -169,10 +265,13 @@ def start():
     backend_proc = subprocess.Popen(
         [sys.executable, str(BACKEND_DIR / "main.py")],
         cwd=str(BACKEND_DIR),
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-        stdin=subprocess.DEVNULL,
+        **_new_proc_group_kwargs(),
     )
-    pids["backend"] = backend_proc.pid
+    pids["backend"] = {
+        "pid": backend_proc.pid,
+        "command": str(BACKEND_DIR / "main.py"),
+    }
+    _save_pids(pids)
     
     # 等待后端就绪
     for i in range(20):
@@ -181,17 +280,23 @@ def start():
             print(f"[START] 后端已就绪 (PID: {backend_proc.pid}, port: {BACKEND_PORT})")
             break
     else:
-        print(f"[WARN] 后端启动可能未完成，请检查")
+        print("[ERROR] 后端未在规定时间内就绪")
+        _kill_process_tree(backend_proc.pid)
+        PID_FILE.unlink(missing_ok=True)
+        return 1
     
     # 启动前端（stdout/stderr继承终端，stdin关闭）
     print("[START] 正在启动前端服务...")
     frontend_proc = subprocess.Popen(
-        ["npm.cmd", "run", "dev"],
+        [NPM_CMD, "run", "dev"],
         cwd=str(FRONTEND_DIR),
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
-        stdin=subprocess.DEVNULL,
+        **_new_proc_group_kwargs(),
     )
-    pids["frontend"] = frontend_proc.pid
+    pids["frontend"] = {
+        "pid": frontend_proc.pid,
+        "command": "run dev",
+    }
+    _save_pids(pids)
     
     # 等待前端就绪
     for i in range(20):
@@ -200,9 +305,11 @@ def start():
             print(f"[START] 前端已就绪 (PID: {frontend_proc.pid}, port: {FRONTEND_PORT})")
             break
     else:
-        print(f"[WARN] 前端启动可能未完成，请检查")
-    
-    _save_pids(pids)
+        print("[ERROR] 前端未在规定时间内就绪")
+        _kill_process_tree(frontend_proc.pid)
+        _kill_process_tree(backend_proc.pid)
+        PID_FILE.unlink(missing_ok=True)
+        return 1
     
     print()
     print("=" * 50)
@@ -210,13 +317,17 @@ def start():
     print("=" * 50)
     print(f"  后端 API:   http://localhost:{BACKEND_PORT}")
     print(f"  前端界面:   http://localhost:{FRONTEND_PORT}")
-    print(f"  MCP 配置:   C:\\Users\\{os.getlogin()}\\.kimi\\mcp.json")
+    if IS_WINDOWS:
+        print(f"  MCP 配置:   C:\\Users\\{os.getlogin()}\\.kimi\\mcp.json")
+    else:
+        print(f"  MCP 配置:   ~/.kimi/mcp.json")
     print()
     print("  按 Ctrl+C 停止所有服务")
     print("=" * 50)
     print()
     
     # 主循环：占据终端，显示日志，等待 Ctrl+C
+    exit_code = 0
     try:
         while True:
             backend_alive = backend_proc.poll() is None
@@ -224,21 +335,26 @@ def start():
             
             if not backend_alive:
                 print("\n[WARN] 后端进程已退出")
+                exit_code = 1
                 break
             
             if not frontend_alive:
                 print("\n[WARN] 前端进程已退出")
+                exit_code = 1
                 break
             
             time.sleep(1)
     except KeyboardInterrupt:
         print("\n[INFO] 收到 Ctrl+C，正在停止服务...")
-        _kill_process_tree(backend_proc.pid)
-        _kill_process_tree(frontend_proc.pid)
+    finally:
+        if backend_proc.poll() is None:
+            _kill_process_tree(backend_proc.pid)
+        if frontend_proc.poll() is None:
+            _kill_process_tree(frontend_proc.pid)
         PID_FILE.unlink(missing_ok=True)
         print("[STOP] 所有服务已停止")
-    
-    return 0
+
+    return exit_code
 
 
 def stop():
@@ -246,12 +362,6 @@ def stop():
     print("[STOP] 正在停止服务...")
     
     stopped = _stop_by_pids()
-    if not stopped:
-        stopped = _stop_by_ports()
-    
-    # 额外清理遗留进程
-    _stop_zombie_python()
-    
     PID_FILE.unlink(missing_ok=True)
     
     # 等待端口释放
@@ -261,14 +371,11 @@ def stop():
     frontend_pid = _find_process_by_port(FRONTEND_PORT)
     
     if backend_pid:
-        print(f"[STOP] 后端仍在运行 (PID: {backend_pid})，强制终止...")
-        _kill_process_tree(backend_pid)
-    
+        print(f"[WARN] 端口 {BACKEND_PORT} 仍被 PID {backend_pid} 占用；未强制终止非托管进程")
     if frontend_pid:
-        print(f"[STOP] 前端仍在运行 (PID: {frontend_pid})，强制终止...")
-        _kill_process_tree(frontend_pid)
-    
-    print("[STOP] 所有服务已停止")
+        print(f"[WARN] 端口 {FRONTEND_PORT} 仍被 PID {frontend_pid} 占用；未强制终止非托管进程")
+
+    print("[STOP] 托管服务已停止" if stopped else "[STOP] 未发现可安全停止的托管服务")
     return 0
 
 

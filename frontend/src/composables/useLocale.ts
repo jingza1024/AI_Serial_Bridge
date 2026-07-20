@@ -1,18 +1,19 @@
-import { ref, computed } from 'vue'
+import { shallowRef, computed } from 'vue'
 import zh from '../locales/zh'
 import en from '../locales/en'
 
 export type Locale = 'zh' | 'en'
+type MessageTree = { [key: string]: string | MessageTree }
 
-const messages: Record<Locale, Record<string, any>> = { zh, en }
+const messages: Record<Locale, MessageTree> = { zh, en }
 
-const currentLocale = ref<Locale>('zh')
+const currentLocale = shallowRef<Locale>('zh')
 
-function _get(obj: any, path: string): string {
+function _get(obj: MessageTree, path: string): string {
   const keys = path.split('.')
-  let result = obj
+  let result: string | MessageTree | undefined = obj
   for (const key of keys) {
-    if (result === undefined || result === null) return path
+    if (typeof result === 'string' || result === undefined) return path
     result = result[key]
   }
   return typeof result === 'string' ? result : path
@@ -23,21 +24,17 @@ export function useLocale() {
     get: () => currentLocale.value,
     set: (val: Locale) => {
       currentLocale.value = val
-      // 同步通知后端切换语言
-      try {
-        fetch('/api/lang', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ lang: val })
-        }).catch(() => {})
-      } catch {
-        // ignore
-      }
     }
   })
 
-  function t(path: string): string {
-    return _get(messages[currentLocale.value], path)
+  function t(path: string, params?: Record<string, string | number | boolean>): string {
+    let s = _get(messages[currentLocale.value], path)
+    if (params) {
+      for (const k of Object.keys(params)) {
+        s = s.split(`{${k}}`).join(String(params[k]))
+      }
+    }
+    return s
   }
 
   return { locale, t }

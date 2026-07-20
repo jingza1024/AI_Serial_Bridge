@@ -1,0 +1,6 @@
+-r requirements-mcp.txt
+-r requirements-desktop.txt
+
+# 开发与打包依赖
+pytest>=8.0.0
+pyinstaller>=6.0.0  # 桌面应用打包
