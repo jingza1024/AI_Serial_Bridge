@@ -183,14 +183,42 @@ def _release_lock(descriptor: int, *, offset: int = 0) -> None:
         os.close(descriptor)
 
 
+# fcntl/msvcrt byte locks are process-scoped, so concurrent threads in the
+# same process must also take a threading.Lock or they will both succeed.
+_STATE_THREAD_LOCKS: dict[str, threading.Lock] = {}
+_STATE_THREAD_LOCKS_GUARD = threading.Lock()
+
+
+def _thread_lock_for(lock_path: Path) -> threading.Lock:
+    key = str(lock_path.resolve(strict=False))
+    with _STATE_THREAD_LOCKS_GUARD:
+        lock = _STATE_THREAD_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _STATE_THREAD_LOCKS[key] = lock
+        return lock
+
+
 @contextmanager
 def _state_lock(lock_path: Path, timeout: float = 3.0):
     _ensure_state_dir(lock_path.parent)
-    descriptor = _acquire_lock(lock_path, timeout=timeout)
+    thread_lock = _thread_lock_for(lock_path)
+    deadline = time.monotonic() + timeout
+    while True:
+        acquired = thread_lock.acquire(timeout=max(0.0, deadline - time.monotonic()))
+        if acquired:
+            break
+        if time.monotonic() >= deadline:
+            raise RuntimeConfigError(f"timed out waiting for local state lock: {lock_path}")
     try:
-        yield
+        remaining = max(0.0, deadline - time.monotonic())
+        descriptor = _acquire_lock(lock_path, timeout=remaining)
+        try:
+            yield
+        finally:
+            _release_lock(descriptor)
     finally:
-        _release_lock(descriptor)
+        thread_lock.release()
 
 
 _DESKTOP_PROCESS_LOCK = threading.Lock()
