@@ -1,5 +1,67 @@
 # Progress Log
 
+## Session: 2026-07-21 (Phase 12 live MCP)
+
+### Desktop + MCP zero-config live check
+- **Status:** pass (non-hardware + shared history)
+- Desktop runtime live: instance matched `/api/config`.
+- MCP without `AI_SERIAL_TOKEN`/`AI_SERIAL_API_URL`:
+  - `scripts/smoke_test_mcp.py`: 19 tools + `serial_list_ports` OK
+  - `serial_is_open`/`serial_get_lease` on COM16/17/18 OK
+  - `serial_list_macros` / schedules / health OK
+  - `serial_get_history` on user-opened COM18 returned shared Linux shell session (`ls` listing visible)
+- Hardware write probe later completed on COM18 after user authorization.
+
+### COM18 live write/read (authorized)
+- **Status:** pass
+- Port left open for desktop user session; MCP released write lease.
+- Commands: `printf MCP_OK`, `uname -a`, `echo CODEX_COM18_PROBE` all returned device output.
+- Device: Linux ubuntu 5.15.185-tegra aarch64; shell `bliiot@ubuntu`.
+- History source labeled as AI for MCP writes; visible in shared history.
+
+## Session: 2026-07-21 (handoff resume)
+
+### Resume from session 019f5e8c
+- **Status:** backend verification complete; live desktop+MCP still pending
+- Read start-here and full handoff for session `019f5e8c-0a58-7921-9d23-79ccb76b0bbc`.
+- Branch: `codex/desktop-build-freshness` at `37ec1e8` with uncommitted Phase 11/12 work (local_runtime, desktop lock/generation, MCP discovery, serial input normalization, docs).
+- Full backend suite (escalated, no cacheprovider): **139 passed** in 6.30s.
+- Sandbox note: workspace basetemp under managed FS still hits `PermissionError` on cleanup; use escalated pytest or a writable basetemp.
+- Do not re-implement lock/generation protocol unless a regression appears.
+- Next: desktop GUI + MCP live pairing verification; then commit/docs polish and remote publish only with `gh` auth (never chat tokens).
+
+## Session: 2026-07-21 (Phase 12)
+
+### Phase 12: Zero-config local MCP pairing
+- **Status:** in progress
+- User-approved direction: running the desktop program should be sufficient for an Agent MCP client to connect without manually copying a token.
+- Initial evidence: desktop used an ephemeral token while the configured MCP used a different fixed token; direct MCP calls returned HTTP 401, while an API call using the desktop token succeeded.
+- Planned implementation: user-scoped credential storage, atomic runtime endpoint manifest, dynamic MCP config loading, bounded retry/error classification, compatibility overrides, and integration/documentation tests.
+- Test environment note: the default pytest temp root is inaccessible, and the first workspace `--basetemp` retry failed because `.test-tmp` did not yet exist. Create the parent directory before rerunning; no Phase 12 test body executed in that attempt.
+- The precreated-parent retry still failed during pytest temp cleanup with `PermissionError` on the generated base directory. This is a managed-sandbox filesystem issue; obtain the first real test result via a controlled unsandboxed pytest invocation.
+- Focused runtime-state verification reached the test bodies: one valid explicit remote URL with a path prefix was over-rejected. The normalizer now permits paths only for explicit URLs; runtime manifests remain root-only. Result: 8 Phase 12 runtime tests passed.
+- Desktop integration audit identified a manifest cleanup TOCTOU race and a stronger readiness requirement: publish only after `/api/config` reports this process's service and instance ID.
+- Added RED/GREEN coverage for explicit remote isolation and concurrent manifest replacement. Remote targets no longer inspect local pairing files, and a shared manifest lock prevents an older desktop cleanup from deleting a newer instance's manifest. Focused result: 10 passed.
+- Desktop startup now loads or creates the persistent token before importing the backend, sets a unique instance ID, verifies `/api/config` identity before publishing, and removes only its own manifest in `finally`. `/api/config` exposes only service, instance ID, and auth state. Combined Phase 12 runtime/desktop/API result: 18 passed.
+- Later hardening (same day): generation-bound save-token, loopback proxy bypass, native OS desktop lock with two-phase byte locks (gate + active), generation at offset >= 64 for Windows msvcrt, real subprocess regression for cross-process generation reads. Focused Phase 12 suite historically 84 passed.
+
+## Session: 2026-07-21
+
+### Phase 11: Desktop serial reopen interaction
+- **Status:** complete
+- Reproduction:
+  - The desktop process stayed open while COM18 at 115200 was opened, used, closed, and opened again.
+  - Before the fix, xterm Enter sent CR; the Linux shell displayed `^M` and did not execute the command. A direct LF probe returned `CODEX_LF_OK`.
+  - The previously published Vue session-cache fix was present in source but absent from the 2026-07-14 `frontend/dist` loaded by the desktop launcher.
+- Fix:
+  - Added interactive CR/CRLF/LF normalization with LF as the Linux-console default and a visible per-terminal selector.
+  - Added a desktop development guard that refuses to serve `frontend/dist` when frontend inputs are newer than the bundle.
+- Verification:
+  - RED/GREEN utility tests cover CR, LF, CRLF, and unchanged input.
+  - Rebuilt `frontend/dist` and verified the same-process COM18 flow: first `ls` worked, close/reopen completed, and second `ls` returned the Linux directory listing and prompt.
+  - User manually repeated the close/reopen workflow and confirmed normal interaction.
+  - Backend: 102 passed; frontend: 18 passed; production build passed; Playwright: 3/3 passed.
+
 ## Session: 2026-07-20
 
 ### Phase 10: Python 3.10 CI Compatibility
@@ -80,6 +142,7 @@
 | Backend baseline | 72 tests pass | 72 passed | pass |
 | Frontend baseline | 4 tests pass | 4 passed | pass |
 | Dependency audit | 0 vulnerabilities | 0 vulnerabilities | pass |
+| Backend full (handoff 2026-07-21) | all pass | 139 passed | pass |
 
 ### Phase 2: Automation Domain
 - **Status:** complete
@@ -154,12 +217,15 @@
 | 2026-07-17 | Backend test path missing from frontend workdir | 1 | Run backend verification from worktree root. |
 | 2026-07-17 | `useAutomations` import missing | 1 | Expected RED result before composable implementation. |
 | 2026-07-17 | Automation panel imports missing | 1 | Expected RED result before panel implementation. |
+| 2026-07-21 | Sandboxed pytest basetemp PermissionError | 1 | Rerun full suite with escalated permissions; 139 passed. |
 
 ## Reboot Check
 | Question | Answer |
 |----------|--------|
-| Where am I? | Phase 4 Web UI |
-| Where am I going? | Automation, integrations, UI, migration, hardware, delivery |
-| What's the goal? | Finish the remaining roadmap safely |
+| Where am I? | Phase 12 zero-config MCP pairing; backend suite green |
+| Where am I going? | Desktop+MCP live pairing verify, then finalize Phase 12 and publish |
+| What's the goal? | Desktop start alone is enough for Agent MCP pairing |
 | What have I learned? | See `findings.md` |
 | What have I done? | See this log |
+
+

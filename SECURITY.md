@@ -6,14 +6,14 @@ AI Serial Bridge controls physical hardware. Keep the backend bound to `127.0.0.
 
 ## Authentication Model
 
-- MCP clients send `AI_SERIAL_TOKEN` as a Bearer credential.
+- Local MCP clients use the user-scoped credential in `~/.ai-serial-bridge/credentials.json`; `AI_SERIAL_TOKEN` is an explicit override and is sent as a Bearer credential.
 - Browsers exchange the master token at `POST /api/session` for a short-lived HttpOnly, SameSite session cookie.
-- `/api/config` exposes only whether authentication is required; it never returns a token.
+- `/api/config` exposes only the service name, instance ID, and whether authentication is required; it never returns a token.
 - Browser WebSocket upgrades validate `Origin` and authenticate with the session cookie.
-- Desktop mode generates a random token per launch unless the user supplies one.
+- Desktop mode persists its default token per OS user and publishes a token-free loopback runtime manifest only after the matching backend is ready.
 
 Do not place tokens in query strings. For browser bootstrap, use the URL fragment form `http://localhost:5173/#token=<token>`; fragments are removed after session creation and are not sent in HTTP requests.
-External MCP clients cannot reuse the random desktop-only token. Set `AI_SERIAL_TOKEN` explicitly before launching `desktop.py` and provide the same value to the MCP process. If an HTTP proxy intercepts loopback requests, set `NO_PROXY=127.0.0.1,localhost` for the backend and MCP process rather than disabling authentication.
+The MCP proxy preflights `/api/config` without credentials before sending a token. Explicit remote URLs use only their explicit token and never receive the saved local credential; loopback requests bypass environment proxies automatically. Desktop and MCP processes must use the same OS account. `AI_SERIAL_STATE_DIR` may relocate that account's owner-only state directory but does not enable cross-account sharing. Stop the desktop before deleting `credentials.json` to rotate the default token.
 
 ## Operational Safety
 
@@ -32,7 +32,7 @@ Set `AI_SERIAL_LOG_KEY` to a Fernet key to encrypt newly written records at rest
 
 To migrate existing plaintext logs or rotate a key, stop the backend and run `python scripts/rotate_log_key.py --dry-run` first. Set the destination key only in `AI_SERIAL_LOG_KEY`; for rotation, set the previous key in `AI_SERIAL_LOG_OLD_KEY`. The command validates every JSONL record before atomically replacing files, keeps migration backups, and rolls back replacements after an error. It never accepts or prints key material.
 
-The real-device smoke probe is intentionally bounded and read-only: `python scripts/test_hardware_automation.py --port COM17 --baudrate 115200` opens one lease, runs `uname -a`, verifies a health rule event, and releases the port. Review the target port before running it on any other device.
+The real-device smoke probe is intentionally bounded and read-only: `python scripts/test_hardware_automation.py --port <PORT> --baudrate 115200` opens one lease, runs `uname -a`, verifies a health rule event, and releases the port. Review the target port before running it.
 
 ## Reporting
 

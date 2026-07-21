@@ -5,6 +5,7 @@ import TerminalToolbar from './TerminalToolbar.vue'
 import { useSerial, type SerialMessage, type SerialRawChunk, type TransferProtocol } from '../composables/useSerial'
 import { useLocale } from '../composables/useLocale'
 import { useTerminalSession } from '../composables/useTerminalSession'
+import { normalizeInteractiveInput, type SerialNewline } from '../utils/serialInput'
 import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps<{ port: string }>()
@@ -24,6 +25,7 @@ const sendProgress = shallowRef(0)
 const fileProtocol = shallowRef<TransferProtocol>('raw')
 const inputText = ref('')
 const newlineMode = ref('\r\n')
+const interactiveNewlineMode = ref<SerialNewline>('\n')
 
 const settings = computed(() => serial.portSettings.value[props.port])
 const baudrate = computed(() => settings.value?.baudrate ?? 115200)
@@ -243,8 +245,8 @@ onMounted(() => {
   }
   term.onData((data) => {
     if (!interactiveMode.value || !serial.isSerialOpen.value[props.port] || !canWrite.value) return
-    if (localEcho.value) term?.write(data)
-    keyBuffer += data
+    if (localEcho.value) term?.write(data.replace(/\r/g, '\r\n'))
+    keyBuffer += normalizeInteractiveInput(data, interactiveNewlineMode.value)
     if (keyBufferTimer) clearTimeout(keyBufferTimer)
     keyBufferTimer = setTimeout(flushKeyBuffer, 5)
   })
@@ -333,10 +335,17 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
         {{ t('terminal.interactiveHint') }}
         <template v-if="localEcho"> | {{ t('terminal.localEchoOn') }}</template>
       </span>
-      <label class="checkbox">
-        <input v-model="showAiLog" type="checkbox" />
-        {{ t('terminal.showAiLog') }}
-      </label>
+      <div class="hint-controls">
+        <select v-model="interactiveNewlineMode" class="select select-compact" :title="t('terminal.newline')">
+          <option :value="'\n'">LF (\n)</option>
+          <option :value="'\r\n'">CRLF (\r\n)</option>
+          <option :value="'\r'">CR (\r)</option>
+        </select>
+        <label class="checkbox">
+          <input v-model="showAiLog" type="checkbox" />
+          {{ t('terminal.showAiLog') }}
+        </label>
+      </div>
     </div>
     <input ref="fileInputRef" type="file" class="hidden-file-input" @change="onFilePicked" />
   </div>
@@ -393,6 +402,12 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
   width: 110px;
 }
 
+.select-compact {
+  width: 96px;
+  padding-block: 4px;
+  font-size: 12px;
+}
+
 .input {
   flex: 1;
   font-family: Consolas, 'Courier New', monospace;
@@ -428,6 +443,12 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
 .checkbox {
   color: #8b949e;
   font-size: 12px;
+}
+
+.hint-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
 
 .checkbox {

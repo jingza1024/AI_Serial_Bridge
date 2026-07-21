@@ -56,7 +56,9 @@ python desktop.py
 
 ## 访问鉴权
 
-桌面应用未设置 `AI_SERIAL_TOKEN` 时，会在每次启动时自动生成随机 token，通过 URL fragment 交给前端换取 HttpOnly 会话；token 不会打印到日志或从 `/api/config` 返回。
+未设置 `AI_SERIAL_TOKEN` 时，桌面应用首次启动会创建 `~/.ai-serial-bridge/credentials.json`，后续启动复用同一用户级 token。token 仅通过 URL fragment 交给前端换取 HttpOnly 会话，不会打印到日志，也不会从 `/api/config` 或运行清单返回。
+
+服务就绪后，桌面应用写入 `~/.ai-serial-bridge/runtime.json`，其中只包含回环 API URL、PID、启动时间和实例 ID。外部 MCP 代理每次请求都会重新读取凭据和运行清单，因此桌面端口变化无需手工同步。MCP 仍需在 AI 客户端中一次性注册，并与桌面使用同一 OS 账户；`AI_SERIAL_STATE_DIR` 仅用于该账户内重定位状态目录，不支持跨账户共享。
 
 如需固定 token，可在启动前显式设置：
 
@@ -68,4 +70,4 @@ $env:AI_SERIAL_TOKEN="your-random-secret"
 & ".\AI Serial Bridge.exe"
 ```
 
-固定 token 用于浏览器创建 HttpOnly 会话，也供外部 MCP 进程通过 Bearer 认证。连接同一桌面后端时，必须把相同的 `AI_SERIAL_TOKEN` 和实际 `AI_SERIAL_API_URL` 传给 MCP 进程。远程部署要求 TLS，并应阅读 `SECURITY.md`。
+显式 token 不会替换保存的默认凭据。使用该覆盖值时，必须把相同的 `AI_SERIAL_TOKEN` 传给 MCP 进程；独立或远程后端还可显式设置 `AI_SERIAL_API_URL`。远程部署要求 TLS，并应阅读 `SECURITY.md`。

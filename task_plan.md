@@ -4,7 +4,7 @@
 Complete the remaining roadmap: device health rules, command macros, scheduled diagnostics, encrypted-log key migration, COM17 hardware verification, documentation, and a final verified commit.
 
 ## Current Phase
-Phase 10: Python 3.10 CI Compatibility (complete)
+Phase 12: Zero-config local MCP pairing (complete)
 
 ## Phases
 
@@ -65,6 +65,22 @@ Phase 10: Python 3.10 CI Compatibility (complete)
 - [x] Commit, push, and confirm green CI.
 - **Status:** complete
 
+### Phase 11: Desktop serial reopen interaction
+- [x] Reproduce the same-process COM18 close/reopen flow at 115200.
+- [x] Confirm the stale desktop bundle and Linux Enter newline mismatch.
+- [x] Add regression coverage for interactive newline normalization and stale builds.
+- [x] Rebuild the desktop frontend and verify COM18 after close/reopen.
+- [x] Run the full verification suite and update documentation.
+- **Status:** complete
+
+### Phase 12: Zero-config local MCP pairing
+- [x] Add a user-scoped persistent credential store with atomic writes and safe permissions.
+- [x] Add a runtime manifest for the active desktop API URL and process identity.
+- [x] Make MCP discover credentials and endpoint dynamically with bounded retries.
+- [x] Preserve explicit environment-variable overrides and reject stale/malformed runtime state safely.
+- [x] Add integration tests, migrate documentation/examples, and verify desktop-visible MCP calls.
+- **Status:** complete
+
 ## Key Decisions
 | Decision | Rationale |
 |----------|-----------|
@@ -97,7 +113,14 @@ Phase 10: Python 3.10 CI Compatibility (complete)
 | Python 3.10 full MCP environment timed out downloading Windows `pywin32` | 1 | Switched to the exact failing API suite with backend dependencies and `httpx`; GitHub Ubuntu CI does not require `pywin32`. |
 | Focused Python 3.10 API environment lacked `httpx` | 1 | Added the CI-equivalent `httpx>=0.27` dependency; 32 API tests passed. |
 | Two GitHub Web nodes hit the 30-second Git low-speed threshold | 2 | Use a third official node without the aggressive threshold for the small push. |
+| `ModuleNotFoundError: local_runtime` in Phase 12 RED tests | 1 | Expected missing-module failure; implement the shared runtime configuration layer next. |
+| Pytest cache directory is not writable in the current workspace | 1 | Run focused and full tests with `-p no:cacheprovider`; test execution itself remains available. |
+| Workspace `--basetemp` parent directory did not exist | 1 | Create `E:\\AI_Serial\\.test-tmp` before rerunning focused tests. |
+| Pytest-created workspace temp directory became unreadable under the managed Windows sandbox | 2 | Rerun the focused pytest command with controlled escalation; do not treat setup errors as product failures. |
+| Multi-file planning patch used an invalid update marker | 2 | Stop combining planning-file patches; apply one file per patch. |
+| Desktop test patched the shared stdlib `secrets` module | 1 | Remove the global monkeypatch and assert the generated instance ID dynamically. |
 
 ## Notes
 - Re-read this file before major decisions.
 - Update after each phase and log every error.
+

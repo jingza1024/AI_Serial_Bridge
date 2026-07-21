@@ -190,7 +190,9 @@ cd ..
 python desktop.py
 ```
 
-Desktop mode generates a random authentication token when `AI_SERIAL_TOKEN` is unset. To connect an external MCP client to the same desktop backend, set `AI_SERIAL_TOKEN` before launching `desktop.py` and pass the same value to the MCP process.
+On first launch, desktop mode creates a user-scoped credential at `~/.ai-serial-bridge/credentials.json` and reuses it. It publishes the active loopback URL in `runtime.json` without the token, so a registered MCP proxy discovers desktop restarts and port changes automatically. An explicit `AI_SERIAL_TOKEN` overrides this pairing and must also be supplied to the MCP process.
+
+In source checkout mode, `desktop.py` refuses to serve an outdated `frontend/dist` bundle when the Vue source or build configuration is newer; rebuild with `cd frontend && npm run build`. Interactive terminals default to LF for Linux consoles and expose a per-terminal CRLF/CR selector for devices with different Enter semantics.
 
 ### Build the Desktop Distribution
 
@@ -272,14 +274,14 @@ python scripts/rotate_log_key.py
 The CLI never accepts keys as arguments or prints them. It leaves migration backups beside each log file. The included read-only hardware check uses the attached Linux target as follows:
 
 ```bash
-python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
+python scripts/test_hardware_automation.py --port <PORT> --baudrate 115200
 ```
 
 ## MCP Configuration
 
-> **Prerequisite**: Ensure the backend service is running (`python main.py` or `python manager.py start`), because the MCP Server proxies to `localhost:8000` via HTTP.
+> **Prerequisite**: Install `backend/requirements-mcp.txt` and register `backend/mcp_server.py` with the Agent client once. Then start the desktop app, `python backend/main.py`, or `python manager.py start`.
 
-If a system proxy intercepts loopback traffic, set `NO_PROXY=127.0.0.1,localhost` (and `no_proxy` on case-sensitive environments) for the MCP process. When authentication is enabled, the MCP process must receive the same `AI_SERIAL_TOKEN` as the backend.
+The MCP proxy resolves the active desktop URL and credential before every request; standalone mode defaults to `http://127.0.0.1:8000`. Use `AI_SERIAL_API_URL` and `AI_SERIAL_TOKEN` only for explicit standalone or remote targets. Loopback requests bypass environment proxies automatically, while a remote URL may use them and never receives the saved local credential.
 
 All paths below are examples. Replace `<YOUR_PROJECT_PATH>` with your actual installation directory.
 
@@ -551,25 +553,21 @@ Reference: https://opencode.ai/docs/mcp-servers/
 
 Config file: `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`)
 
-> Codex uses TOML format. When backend authentication is enabled, configure the same token in the MCP process environment.
+> Codex uses TOML format. The default desktop setup needs only the command and script path.
 
 ```toml
 [mcp_servers.ai-serial-bridge]
 command = "python"
 args = ["<YOUR_PROJECT_PATH>/backend/mcp_server.py"]
-
-[mcp_servers.ai-serial-bridge.env]
-AI_SERIAL_API_URL = "http://127.0.0.1:8000"
-AI_SERIAL_TOKEN = "<YOUR_AI_SERIAL_TOKEN>"
 ```
 
 Or add via CLI:
 
 ```bash
-codex mcp add ai-serial-bridge --env AI_SERIAL_API_URL=http://127.0.0.1:8000 --env AI_SERIAL_TOKEN=<YOUR_AI_SERIAL_TOKEN> -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
+codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
 ```
 
-Restart Codex or open a new task after changing MCP configuration. Use `python scripts/smoke_test_mcp.py` to verify stdio initialization and backend connectivity. For a real Linux console check, set `AI_SERIAL_TEST_PORT` and run `python scripts/test_linux_serial_mcp.py`; it sends only `printf` and `uname`, validates the response, and closes the port. A com0com pair can validate the complete protocol path with `python scripts/test_xmodem_mcp_loopback.py`.
+Restart Codex or open a new task once after registering or changing MCP configuration. Later desktop restarts and port changes are discovered without another MCP reload. Use `python scripts/smoke_test_mcp.py` to verify stdio initialization and backend connectivity. For a real Linux console check, set `AI_SERIAL_TEST_PORT` and run `python scripts/test_linux_serial_mcp.py`; it sends only `printf` and `uname`, validates the response, and closes the port. A com0com pair can validate the complete protocol path with `python scripts/test_xmodem_mcp_loopback.py`.
 
 Reference: https://developers.openai.com/codex/mcp
 
@@ -668,6 +666,7 @@ AI_Serial/
 ├── backend/
 │   ├── main.py             # FastAPI + WebSocket service
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP proxy)
+│   ├── local_runtime.py    # Desktop credentials and runtime discovery
 │   ├── automations.py      # Health rules, macros, and schedule runtime
 │   ├── serial_manager.py   # Multi-port serial manager
 │   ├── leases.py           # Per-port single-writer leases

@@ -50,14 +50,25 @@ def test_config_endpoint_no_auth():
         r = c.get("/api/config")
         assert r.status_code == 200
         body = r.json()
-        assert body == {"auth_required": False}
+        assert body == {
+            "auth_required": False,
+            "service": "ai-serial-bridge",
+            "instance_id": main._INSTANCE_ID,
+        }
 
 
 def test_config_never_discloses_token_and_session_cookie_authenticates(monkeypatch):
     monkeypatch.setattr(main, "_AUTH_TOKEN", "topsecret")
 
     with TestClient(main.app) as c:
-        assert c.get("/api/config").json() == {"auth_required": True}
+        config = c.get("/api/config").json()
+        assert config == {
+            "auth_required": True,
+            "service": "ai-serial-bridge",
+            "instance_id": main._INSTANCE_ID,
+        }
+        assert "token" not in config
+        assert "topsecret" not in json.dumps(config)
         assert c.get("/api/ports").status_code == 401
         assert c.post("/api/session").status_code == 401
 

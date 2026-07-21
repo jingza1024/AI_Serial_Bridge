@@ -38,6 +38,7 @@ from automations import (
     SchedulePlanner,
 )
 from leases import LeaseResult, PortLease, port_leases
+from local_runtime import SERVICE_NAME
 from log_store import serial_logs
 from transfers import (
     DEFAULT_MAX_BATCH_FILES,
@@ -56,8 +57,9 @@ from serial_manager import (
 
 # --- 可选鉴权 token（opt-in）---
 # MCP 使用 Bearer token；浏览器用主 token 换取短期 HttpOnly 会话。
-# /api/config 仅返回是否需要鉴权，WebSocket 还会校验浏览器 Origin。
+# /api/config 仅返回非秘密服务身份与鉴权状态，WebSocket 还会校验浏览器 Origin。
 _AUTH_TOKEN = os.environ.get("AI_SERIAL_TOKEN", "").strip()
+_INSTANCE_ID = os.environ.get("AI_SERIAL_INSTANCE_ID", "").strip()
 _SESSION_COOKIE = "ai_serial_session"
 _SESSION_TTL = 12 * 60 * 60
 _SESSIONS: dict[str, float] = {}
@@ -627,8 +629,12 @@ async def _auth_middleware(request: Request, call_next):
 
 @app.get("/api/config")
 async def get_config():
-    """仅返回鉴权状态，绝不向客户端公开主 token。"""
-    return {"auth_required": bool(_AUTH_TOKEN)}
+    """Return non-secret service identity and authentication state."""
+    return {
+        "auth_required": bool(_AUTH_TOKEN),
+        "service": SERVICE_NAME,
+        "instance_id": _INSTANCE_ID,
+    }
 
 
 @app.post("/api/session")
