@@ -5,11 +5,20 @@ AI Serial Bridge - Desktop Application
 
 import sys
 import os
-import secrets
+import json
 import threading
 import socket
 import time
+from pathlib import Path
 from urllib.parse import quote
+from urllib.request import ProxyHandler, Request, build_opener
+
+
+_DIRECT_OPENER = build_opener(ProxyHandler({}))
+
+
+def _open_loopback_url(request: Request, timeout: float):
+    return _DIRECT_OPENER.open(request, timeout=timeout)
 
 
 def _get_base_dir():
@@ -21,6 +30,26 @@ def _get_base_dir():
         # PyInstaller onedir/onefile 解包后的资源根目录
         return getattr(sys, '_MEIPASS', os.path.dirname(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+
+def _frontend_build_is_stale(base_dir) -> bool:
+    """Return whether the development frontend bundle predates its inputs."""
+    frontend_dir = Path(base_dir) / 'frontend'
+    bundle_index = frontend_dir / 'dist' / 'index.html'
+    if not bundle_index.is_file():
+        return False
+
+    inputs = [path for path in (frontend_dir / 'src').rglob('*') if path.is_file()]
+    inputs.extend(
+        path for path in (
+            frontend_dir / 'index.html',
+            frontend_dir / 'package.json',
+            frontend_dir / 'package-lock.json',
+            frontend_dir / 'tsconfig.json',
+            frontend_dir / 'vite.config.ts',
+        ) if path.is_file()
+    )
+    return bool(inputs) and max(path.stat().st_mtime for path in inputs) > bundle_index.stat().st_mtime
 
 
 def _find_free_port(preferred: int = 8000) -> int:
@@ -40,27 +69,33 @@ def _find_free_port(preferred: int = 8000) -> int:
         return s.getsockname()[1]
 
 
-def _wait_for_server(host: str, port: int, timeout: float = 10.0) -> bool:
-    """阻塞等待 HTTP 服务器就绪"""
-    deadline = time.time() + timeout
-    while time.time() < deadline:
+def _wait_for_server(
+    host: str,
+    port: int,
+    instance_id: str,
+    timeout: float = 10.0,
+) -> bool:
+    """Wait until this desktop instance answers the public config endpoint."""
+    deadline = time.monotonic() + timeout
+    config_url = f'http://{host}:{port}/api/config'
+    while time.monotonic() < deadline:
         try:
-            with socket.create_connection((host, port), timeout=0.5):
+            request = Request(config_url, method='GET')
+            with _open_loopback_url(request, timeout=0.5) as response:
+                payload = json.loads(response.read().decode('utf-8'))
+            if (
+                isinstance(payload, dict)
+                and payload.get('service') == 'ai-serial-bridge'
+                and payload.get('instance_id') == instance_id
+            ):
                 return True
-        except OSError:
-            time.sleep(0.1)
+        except (OSError, UnicodeDecodeError, ValueError):
+            pass
+        time.sleep(0.1)
     return False
 
 
-def main():
-    base_dir = _get_base_dir()
-    dist_dir = os.path.join(base_dir, 'frontend', 'dist')
-
-    # 将 backend 目录加入 Python 路径
-    backend_dir = os.path.join(base_dir, 'backend')
-    if backend_dir not in sys.path:
-        sys.path.insert(0, backend_dir)
-
+def _run_desktop(base_dir, dist_dir, local_runtime, instance_id):
     port = _find_free_port(8000)
     host = '127.0.0.1'
     if not os.path.isdir(dist_dir) and port != 8000:
@@ -68,8 +103,11 @@ def main():
         sys.exit(1)
 
     # 设置环境变量，让后端适配
-    auth_token = os.environ.get('AI_SERIAL_TOKEN', '').strip() or secrets.token_urlsafe(32)
+    auth_token = local_runtime.load_or_create_token(
+        os.environ.get('AI_SERIAL_TOKEN', '')
+    )
     os.environ['AI_SERIAL_TOKEN'] = auth_token
+    os.environ['AI_SERIAL_INSTANCE_ID'] = instance_id
     os.environ['AI_SERIAL_PORT'] = str(port)
     os.environ['AI_SERIAL_HOST'] = host
     os.environ['AI_SERIAL_DESKTOP'] = '1'  # 标记：桌面模式
@@ -88,38 +126,71 @@ def main():
         server.run()
 
     server_thread = threading.Thread(target=run_server, daemon=True)
-    server_thread.start()
+    try:
+        server_thread.start()
 
-    # --- 等待服务器就绪 ---
-    print(f"[AI Serial Bridge] 正在启动服务 {host}:{port}...")
-    if not _wait_for_server(host, port):
-        print(f"ERROR: 后端服务启动失败 {host}:{port}")
+        # --- 等待服务器就绪 ---
+        print(f"[AI Serial Bridge] 正在启动服务 {host}:{port}...")
+        if not _wait_for_server(host, port, instance_id):
+            print(f"ERROR: 后端服务启动失败 {host}:{port}")
+            sys.exit(1)
+        print("[AI Serial Bridge] 服务已就绪")
+        local_runtime.write_runtime_manifest(
+            f'http://{host}:{port}',
+            pid=os.getpid(),
+            instance_id=instance_id,
+        )
+
+        # --- 打开 PyWebView 窗口 ---
+        import webview
+
+        if os.path.isdir(dist_dir):
+            url = f'http://{host}:{port}/#token={quote(auth_token)}'
+            print(f"[AI Serial Bridge] 加载前端: http://{host}:{port}/")
+        else:
+            # 开发回退：指向 Vite 开发服务器
+            url = f'http://localhost:5173/#token={quote(auth_token)}'
+            print("[AI Serial Bridge] 开发模式: http://localhost:5173/")
+
+        window = webview.create_window(
+            title='AI Serial Bridge',
+            url=url,
+            width=1200,
+            height=800,
+            min_size=(800, 600),
+            text_select=True,
+        )
+        window.events.closed += lambda: setattr(server, 'should_exit', True)
+        webview.start(debug=False)
+    finally:
+        server.should_exit = True
+        local_runtime.remove_runtime_manifest(instance_id)
+        if server_thread.is_alive():
+            server_thread.join(timeout=5)
+
+
+def main():
+    base_dir = _get_base_dir()
+    dist_dir = os.path.join(base_dir, 'frontend', 'dist')
+
+    if not getattr(sys, 'frozen', False) and _frontend_build_is_stale(base_dir):
+        print("ERROR: frontend/dist is older than the frontend source.")
+        print("Run: cd frontend && npm run build")
         sys.exit(1)
-    print(f"[AI Serial Bridge] 服务已就绪")
 
-    # --- 打开 PyWebView 窗口 ---
-    import webview
+    # 将 backend 目录加入 Python 路径
+    backend_dir = os.path.join(base_dir, 'backend')
+    if backend_dir not in sys.path:
+        sys.path.insert(0, backend_dir)
 
-    if os.path.isdir(dist_dir):
-        url = f'http://{host}:{port}/#token={quote(auth_token)}'
-        print(f"[AI Serial Bridge] 加载前端: http://{host}:{port}/")
-    else:
-        # 开发回退：指向 Vite 开发服务器
-        url = f'http://localhost:5173/#token={quote(auth_token)}'
-        print("[AI Serial Bridge] 开发模式: http://localhost:5173/")
+    import local_runtime
 
-    window = webview.create_window(
-        title='AI Serial Bridge',
-        url=url,
-        width=1200,
-        height=800,
-        min_size=(800, 600),
-        text_select=True,
-    )
-    window.events.closed += lambda: setattr(server, 'should_exit', True)
-    webview.start(debug=False)
-    server.should_exit = True
-    server_thread.join(timeout=5)
+    try:
+        with local_runtime.desktop_instance_lock() as instance_id:
+            _run_desktop(base_dir, dist_dir, local_runtime, instance_id)
+    except local_runtime.DesktopAlreadyRunning:
+        print("ERROR: AI Serial Bridge 桌面程序已在运行")
+        sys.exit(1)
 
 
 if __name__ == '__main__':

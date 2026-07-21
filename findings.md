@@ -1,5 +1,21 @@
 # Findings & Decisions
 
+## Zero-Config Local MCP Pairing (2026-07-21)
+- The desktop launcher currently generates a new random `AI_SERIAL_TOKEN` when the variable is absent, while the MCP process reads a separate fixed token from its client configuration at import time; this caused the observed `HTTP 401`.
+- The fix must keep loopback authentication enabled and avoid exposing the token through `/api/config`, logs, repository files, or runtime manifests.
+- Recommended boundary: a shared standard-library module owns a user-scoped credential file and an atomic runtime manifest; desktop writes/cleans the manifest, while MCP reads both files on demand.
+- Explicit `AI_SERIAL_TOKEN` and `AI_SERIAL_API_URL` remain highest-priority overrides for CI, servers, and existing deployments.
+- Explicit API URLs may include a reverse-proxy path prefix; desktop runtime manifests remain restricted to root-level loopback URLs.
+- Manifest ownership cleanup must serialize the read/compare/unlink sequence with manifest publication. A read-check-unlink sequence without a shared lock can let an older desktop delete a newer instance's manifest.
+- Desktop readiness must verify public `/api/config` service and instance identity, not only that some process accepts TCP connections on the selected port.
+
+## Desktop Reopen Interaction (2026-07-21)
+- The earlier Vue sequence-cache fix was not present in the desktop process because `E:\AI_Serial\frontend\dist` was built on 2026-07-14 while the source fix landed on 2026-07-20.
+- COM18 at 115200 exposed a second independent issue: xterm emits `\r` for Enter, but this Linux console requires `\n`; CR was rendered as `^M` and left the command pending.
+- Added `normalizeInteractiveInput()` with LF as the default and selectable CRLF/CR modes for other serial devices.
+- Added a development-only desktop freshness check so stale bundles fail with an actionable `npm run build` message.
+- Same-process UI verification after rebuilding: open COM18, run `ls`, close COM18, reopen COM18, run `ls`; both commands returned output and a shell prompt.
+
 ## Python 3.10 CI Failure (2026-07-20)
 - Earlier CI runs failed while collecting `backend/tests/test_api.py`; frontend jobs passed.
 - GitHub Actions uses Python 3.10, while the development machine uses Python 3.13.

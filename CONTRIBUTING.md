@@ -62,6 +62,8 @@ python scripts/smoke_test_mcp.py
 - [ ] File transfers report server acknowledgements and can be cancelled
 - [ ] Automation changes cover macro cancellation, schedule lease conflicts, and regex timeouts
 - [ ] Log migration changes cover dry-run, wrong-key rejection, backups, and rollback
+- [ ] Desktop/MCP pairing changes cover credential reuse, manifest ownership, and desktop port changes without an MCP restart
+- [ ] Explicit remote URLs never receive saved local credentials, and `/api/config` never exposes a token
 
 ## Commit Messages
 

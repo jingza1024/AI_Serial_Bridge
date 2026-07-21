@@ -4,21 +4,58 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
 import uuid
 import zipfile
 
+import httpx
+import pytest
+
+import local_runtime
 import mcp_server
 
 
 class FakeResponse:
-    def __init__(self, payload, content=b"", headers=None):
+    def __init__(self, payload, content=b"", headers=None, status_code=200, request=None):
         self._payload = payload
         self.content = content
         self.headers = headers or {}
+        self.status_code = status_code
+        self.request = request or httpx.Request("GET", "http://test.invalid")
 
     def json(self):
         return self._payload
+
+    def raise_for_status(self):
+        if self.status_code >= 400:
+            raise httpx.HTTPStatusError(
+                f"HTTP {self.status_code}",
+                request=self.request,
+                response=self,
+            )
+
+
+class FakeClient:
+    def __init__(self, handler):
+        self.handler = handler
+        self.calls = []
+        self.trust_env_calls = []
+
+    async def request(self, method, url, **kwargs):
+        self.calls.append((method, url, kwargs))
+        return self.handler(method, url, kwargs)
+
+
+def _use_fake_client(monkeypatch, handler):
+    client = FakeClient(handler)
+
+    async def get_client(*, trust_env=True):
+        client.trust_env_calls.append(trust_env)
+        return client
+
+    monkeypatch.setattr(mcp_server, "_get_client", get_client)
+    return client
 
 
 def test_write_then_read_uses_history_sequence_cursor(monkeypatch):
@@ -92,12 +129,335 @@ def test_structured_system_events_are_localized(monkeypatch):
 
 
 def test_client_headers_include_stable_identity(monkeypatch):
-    monkeypatch.setattr(mcp_server, "_AUTH_TOKEN", "secret")
-    first = mcp_server._client_headers()
-    second = mcp_server._client_headers()
+    first = mcp_server._client_headers("secret")
+    second = mcp_server._client_headers("secret")
     assert first["X-AI-Serial-Client"] == second["X-AI-Serial-Client"]
     assert first["X-AI-Serial-Client-Label"]
     assert first["Authorization"] == "Bearer secret"
+
+
+def test_request_preflights_without_authorization(monkeypatch):
+    target = local_runtime.ConnectionTarget(
+        "http://127.0.0.1:8123",
+        "saved-secret",
+        "desktop-runtime",
+        "desktop-a",
+    )
+    monkeypatch.setattr(
+        mcp_server.local_runtime,
+        "resolve_connection_targets",
+        lambda: [target],
+    )
+
+    def handler(method, url, kwargs):
+        if url.endswith("/api/config"):
+            return FakeResponse({
+                "service": "ai-serial-bridge",
+                "instance_id": "desktop-a",
+                "auth_required": True,
+            })
+        return FakeResponse([{"device": "COM18"}])
+
+    client = _use_fake_client(monkeypatch, handler)
+    response = asyncio.run(mcp_server.api_get("/api/ports"))
+
+    assert response.json() == [{"device": "COM18"}]
+    assert [call[1] for call in client.calls] == [
+        "http://127.0.0.1:8123/api/config",
+        "http://127.0.0.1:8123/api/ports",
+    ]
+    assert "Authorization" not in client.calls[0][2]["headers"]
+    assert client.calls[1][2]["headers"]["Authorization"] == "Bearer saved-secret"
+    assert client.trust_env_calls == [False]
+
+
+def test_manifest_port_change_is_seen_without_mcp_restart(
+    monkeypatch,
+    tmp_path,
+):
+    token = local_runtime.load_or_create_token(state_dir=tmp_path)
+    monkeypatch.setenv("AI_SERIAL_STATE_DIR", str(tmp_path))
+    monkeypatch.delenv("AI_SERIAL_API_URL", raising=False)
+    monkeypatch.delenv("AI_SERIAL_TOKEN", raising=False)
+    instances = {}
+
+    def handler(method, url, kwargs):
+        base = url.rsplit("/api/", 1)[0]
+        if url.endswith("/api/config"):
+            return FakeResponse({
+                "service": "ai-serial-bridge",
+                "instance_id": instances[base],
+                "auth_required": True,
+            })
+        assert kwargs["headers"]["Authorization"] == f"Bearer {token}"
+        return FakeResponse({"base": base})
+
+    client = _use_fake_client(monkeypatch, handler)
+    with local_runtime.desktop_instance_lock(state_dir=tmp_path) as instance_id:
+        instances["http://127.0.0.1:8101"] = instance_id
+        local_runtime.write_runtime_manifest(
+            "http://127.0.0.1:8101",
+            pid=os.getpid(),
+            instance_id=instance_id,
+            state_dir=tmp_path,
+        )
+        first = asyncio.run(mcp_server.api_get("/api/open-ports"))
+    with local_runtime.desktop_instance_lock(state_dir=tmp_path) as instance_id:
+        instances["http://127.0.0.1:8102"] = instance_id
+        local_runtime.write_runtime_manifest(
+            "http://127.0.0.1:8102",
+            pid=os.getpid(),
+            instance_id=instance_id,
+            state_dir=tmp_path,
+        )
+        second = asyncio.run(mcp_server.api_get("/api/open-ports"))
+
+    assert first.json()["base"] == "http://127.0.0.1:8101"
+    assert second.json()["base"] == "http://127.0.0.1:8102"
+    assert [call[1] for call in client.calls] == [
+        "http://127.0.0.1:8101/api/config",
+        "http://127.0.0.1:8101/api/open-ports",
+        "http://127.0.0.1:8102/api/config",
+        "http://127.0.0.1:8102/api/open-ports",
+    ]
+
+
+def test_stale_loopback_token_retries_only_after_401(monkeypatch):
+    targets = [
+        local_runtime.ConnectionTarget("http://127.0.0.1:8000", "stale", "environment"),
+        local_runtime.ConnectionTarget("http://127.0.0.1:8123", "saved", "desktop-runtime"),
+    ]
+    monkeypatch.setattr(
+        mcp_server.local_runtime,
+        "resolve_connection_targets",
+        lambda: targets,
+    )
+
+    def handler(method, url, kwargs):
+        if url.endswith("/api/config"):
+            return FakeResponse({
+                "service": "ai-serial-bridge",
+                "instance_id": "",
+                "auth_required": True,
+            })
+        if url.startswith("http://127.0.0.1:8000"):
+            return FakeResponse({}, status_code=401, request=httpx.Request(method, url))
+        return FakeResponse({"ports": []})
+
+    client = _use_fake_client(monkeypatch, handler)
+    response = asyncio.run(mcp_server.api_get("/api/open-ports"))
+
+    assert response.json() == {"ports": []}
+    assert [call[1] for call in client.calls] == [
+        "http://127.0.0.1:8000/api/config",
+        "http://127.0.0.1:8000/api/open-ports",
+        "http://127.0.0.1:8123/api/config",
+        "http://127.0.0.1:8123/api/open-ports",
+    ]
+    assert all(
+        "Authorization" not in call[2]["headers"]
+        for call in (client.calls[0], client.calls[2])
+    )
+
+
+def test_unreachable_loopback_preflight_falls_back_before_operation(monkeypatch):
+    targets = [
+        local_runtime.ConnectionTarget("http://127.0.0.1:8000", "stale", "environment"),
+        local_runtime.ConnectionTarget("http://127.0.0.1:8123", "saved", "desktop-runtime"),
+    ]
+    monkeypatch.setattr(
+        mcp_server.local_runtime,
+        "resolve_connection_targets",
+        lambda: targets,
+    )
+
+    def handler(method, url, kwargs):
+        if url == "http://127.0.0.1:8000/api/config":
+            raise httpx.ConnectError("stale endpoint", request=httpx.Request(method, url))
+        if url.endswith("/api/config"):
+            return FakeResponse({
+                "service": "ai-serial-bridge",
+                "instance_id": "",
+                "auth_required": True,
+            })
+        return FakeResponse([{"device": "COM18"}])
+
+    client = _use_fake_client(monkeypatch, handler)
+    response = asyncio.run(mcp_server.api_get("/api/ports"))
+
+    assert response.json() == [{"device": "COM18"}]
+    assert [call[1] for call in client.calls] == [
+        "http://127.0.0.1:8000/api/config",
+        "http://127.0.0.1:8123/api/config",
+        "http://127.0.0.1:8123/api/ports",
+    ]
+
+
+def test_url_only_loopback_config_never_sends_saved_token(
+    monkeypatch,
+    tmp_path,
+):
+    saved = local_runtime.load_or_create_token(state_dir=tmp_path)
+    monkeypatch.setenv("AI_SERIAL_STATE_DIR", str(tmp_path))
+    monkeypatch.setenv("AI_SERIAL_API_URL", "http://127.0.0.1:8000")
+    monkeypatch.delenv("AI_SERIAL_TOKEN", raising=False)
+
+    with local_runtime.desktop_instance_lock(state_dir=tmp_path) as instance_id:
+        local_runtime.write_runtime_manifest(
+            "http://127.0.0.1:8123",
+            pid=os.getpid(),
+            instance_id=instance_id,
+            state_dir=tmp_path,
+        )
+
+        def handler(method, url, kwargs):
+            if url == "http://127.0.0.1:8000/api/config":
+                return FakeResponse({
+                    "service": "ai-serial-bridge",
+                    "instance_id": "spoofed",
+                    "auth_required": True,
+                })
+            if url.endswith("/api/config"):
+                return FakeResponse({
+                    "service": "ai-serial-bridge",
+                    "instance_id": instance_id,
+                    "auth_required": True,
+                })
+            return FakeResponse([])
+
+        client = _use_fake_client(monkeypatch, handler)
+        asyncio.run(mcp_server.api_get("/api/ports"))
+
+    assert [call[1] for call in client.calls] == [
+        "http://127.0.0.1:8000/api/config",
+        "http://127.0.0.1:8123/api/config",
+        "http://127.0.0.1:8123/api/ports",
+    ]
+    assert "Authorization" not in client.calls[0][2]["headers"]
+    assert "Authorization" not in client.calls[1][2]["headers"]
+    assert client.calls[2][2]["headers"]["Authorization"] == f"Bearer {saved}"
+
+
+def test_operation_read_timeout_is_not_retried(monkeypatch):
+    targets = [
+        local_runtime.ConnectionTarget("http://127.0.0.1:8101", "one", "first"),
+        local_runtime.ConnectionTarget("http://127.0.0.1:8102", "two", "second"),
+    ]
+    monkeypatch.setattr(
+        mcp_server.local_runtime,
+        "resolve_connection_targets",
+        lambda: targets,
+    )
+
+    def handler(method, url, kwargs):
+        if url.endswith("/api/config"):
+            return FakeResponse({
+                "service": "ai-serial-bridge",
+                "instance_id": "",
+                "auth_required": True,
+            })
+        raise httpx.ReadTimeout("ambiguous read", request=httpx.Request(method, url))
+
+    client = _use_fake_client(monkeypatch, handler)
+    with pytest.raises(httpx.ReadTimeout):
+        asyncio.run(mcp_server.api_get("/api/history"))
+
+    assert [call[1] for call in client.calls] == [
+        "http://127.0.0.1:8101/api/config",
+        "http://127.0.0.1:8101/api/history",
+    ]
+
+
+def test_ambiguous_post_failure_is_not_retried(monkeypatch):
+    targets = [
+        local_runtime.ConnectionTarget("http://127.0.0.1:8101", "one", "first"),
+        local_runtime.ConnectionTarget("http://127.0.0.1:8102", "two", "second"),
+    ]
+    monkeypatch.setattr(
+        mcp_server.local_runtime,
+        "resolve_connection_targets",
+        lambda: targets,
+    )
+
+    def handler(method, url, kwargs):
+        if url.endswith("/api/config"):
+            return FakeResponse({
+                "service": "ai-serial-bridge",
+                "instance_id": "",
+                "auth_required": True,
+            })
+        raise httpx.RemoteProtocolError(
+            "connection closed after write",
+            request=httpx.Request(method, url),
+        )
+
+    client = _use_fake_client(monkeypatch, handler)
+    with pytest.raises(httpx.RemoteProtocolError):
+        asyncio.run(mcp_server.api_post("/api/open", {"port": "COM18"}))
+
+    assert [call[1] for call in client.calls] == [
+        "http://127.0.0.1:8101/api/config",
+        "http://127.0.0.1:8101/api/open",
+    ]
+
+
+def test_manifest_instance_mismatch_never_sends_token(monkeypatch):
+    target = local_runtime.ConnectionTarget(
+        "http://127.0.0.1:8123",
+        "saved-secret",
+        "desktop-runtime",
+        "expected-instance",
+    )
+    monkeypatch.setattr(
+        mcp_server.local_runtime,
+        "resolve_connection_targets",
+        lambda: [target],
+    )
+
+    def handler(method, url, kwargs):
+        return FakeResponse({
+            "service": "ai-serial-bridge",
+            "instance_id": "different-instance",
+            "auth_required": True,
+        })
+
+    client = _use_fake_client(monkeypatch, handler)
+    with pytest.raises(mcp_server.BackendDiscoveryError):
+        asyncio.run(mcp_server.api_get("/api/ports"))
+
+    assert len(client.calls) == 1
+    assert "Authorization" not in client.calls[0][2]["headers"]
+
+
+def test_explicit_api_path_prefix_is_preserved(monkeypatch):
+    target = local_runtime.ConnectionTarget(
+        "https://remote.example/bridge",
+        "remote-secret",
+        "environment",
+    )
+    monkeypatch.setattr(
+        mcp_server.local_runtime,
+        "resolve_connection_targets",
+        lambda: [target],
+    )
+
+    def handler(method, url, kwargs):
+        if url.endswith("/api/config"):
+            return FakeResponse({
+                "service": "ai-serial-bridge",
+                "instance_id": "remote",
+                "auth_required": True,
+            })
+        return FakeResponse([])
+
+    client = _use_fake_client(monkeypatch, handler)
+    asyncio.run(mcp_server.api_get("/api/ports"))
+
+    assert [call[1] for call in client.calls] == [
+        "https://remote.example/bridge/api/config",
+        "https://remote.example/bridge/api/ports",
+    ]
+    assert client.trust_env_calls == [True]
 
 
 def test_protocol_file_tool_posts_exact_bytes(monkeypatch):

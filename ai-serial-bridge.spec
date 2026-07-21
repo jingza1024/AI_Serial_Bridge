@@ -25,6 +25,7 @@ a = Analysis(
     hiddenimports=[
         # 后端模块（desktop.py 经 sys.path 动态导入，需显式声明）
         'main',
+        'local_runtime',
         'automations',
         'serial_manager',
         'leases',

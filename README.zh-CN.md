@@ -188,7 +188,9 @@ cd ..
 python desktop.py
 ```
 
-未设置 `AI_SERIAL_TOKEN` 时，桌面模式每次启动都会生成随机鉴权 token。若要让外部 MCP 客户端连接同一个桌面后端，必须在启动 `desktop.py` 前设置 `AI_SERIAL_TOKEN`，并将相同值传给 MCP 进程。
+首次启动时，桌面模式会在 `~/.ai-serial-bridge/credentials.json` 创建用户级凭据并持续复用。活动回环地址写入不含 token 的 `runtime.json`，已注册的 MCP 代理可自动发现桌面重启和端口变化。显式 `AI_SERIAL_TOKEN` 会覆盖默认配对，此时也必须传给 MCP 进程。
+
+源码模式下，如果 Vue 源码或构建配置比 `frontend/dist` 更新，`desktop.py` 会拒绝加载旧资源并提示执行 `cd frontend && npm run build`。交互终端默认向 Linux 控制台发送 LF，并在每个终端提供 CRLF/CR 换行选项，以兼容不同串口设备的 Enter 语义。
 
 ### 构建桌面发行版
 
@@ -259,14 +261,14 @@ python scripts/rotate_log_key.py
 CLI 不接受命令行密钥，也不会打印密钥。每个日志文件旁会保留迁移备份。附带的只读 Linux 实机检查命令为：
 
 ```bash
-python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
+python scripts/test_hardware_automation.py --port <PORT> --baudrate 115200
 ```
 
 ## MCP 配置
 
-> **前提条件**: 确保后端服务已启动 (`python main.py` 或 `python manager.py start`)，因为 MCP Server 通过 HTTP 代理到 `localhost:8000`。
+> **前提条件**: 安装 `backend/requirements-mcp.txt`，并在 Agent 客户端中一次性注册 `backend/mcp_server.py`。随后启动桌面程序、`python backend/main.py` 或 `python manager.py start`。
 
-如果系统代理会拦截回环流量，请为 MCP 进程设置 `NO_PROXY=127.0.0.1,localhost`（区分大小写的环境同时设置 `no_proxy`）。启用鉴权时，MCP 进程必须使用与后端相同的 `AI_SERIAL_TOKEN`。
+MCP 代理在每次请求前解析当前桌面地址和凭据；独立后端默认使用 `http://127.0.0.1:8000`。仅在显式独立或远程目标中设置 `AI_SERIAL_API_URL` 和 `AI_SERIAL_TOKEN`。回环请求会自动绕过环境代理；远程 URL 可使用代理，但绝不会收到本地保存的凭据。
 
 以下配置中所有路径均为示例，请将 `<YOUR_PROJECT_PATH>` 替换为你的实际安装目录。
 
@@ -538,25 +540,21 @@ mcpServers:
 
 配置文件: `~/.codex/config.toml` (Windows: `%USERPROFILE%\.codex\config.toml`)
 
-> Codex 使用 TOML 格式。后端启用鉴权时，MCP 进程必须配置相同 token。
+> Codex 使用 TOML 格式。默认桌面模式只需配置命令和脚本路径。
 
 ```toml
 [mcp_servers.ai-serial-bridge]
 command = "python"
 args = ["<YOUR_PROJECT_PATH>/backend/mcp_server.py"]
-
-[mcp_servers.ai-serial-bridge.env]
-AI_SERIAL_API_URL = "http://127.0.0.1:8000"
-AI_SERIAL_TOKEN = "<YOUR_AI_SERIAL_TOKEN>"
 ```
 
 或通过 CLI 添加:
 
 ```bash
-codex mcp add ai-serial-bridge --env AI_SERIAL_API_URL=http://127.0.0.1:8000 --env AI_SERIAL_TOKEN=<YOUR_AI_SERIAL_TOKEN> -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
+codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.py
 ```
 
-修改 MCP 配置后需重启 Codex 或新建任务。可运行 `python scripts/smoke_test_mcp.py` 验证 stdio 初始化与后端连通性。真实 Linux 控制台验证可设置 `AI_SERIAL_TEST_PORT` 后运行 `python scripts/test_linux_serial_mcp.py`；脚本只发送 `printf` 和 `uname`，校验返回后关闭端口。使用 com0com 配对时，可运行 `python scripts/test_xmodem_mcp_loopback.py` 验证完整协议链路。
+首次注册或修改 MCP 配置后需重启 Codex 或新建任务；之后桌面重启和端口变化无需再次重载 MCP。可运行 `python scripts/smoke_test_mcp.py` 验证 stdio 初始化与后端连通性。真实 Linux 控制台验证可设置 `AI_SERIAL_TEST_PORT` 后运行 `python scripts/test_linux_serial_mcp.py`；脚本只发送 `printf` 和 `uname`，校验返回后关闭端口。使用 com0com 配对时，可运行 `python scripts/test_xmodem_mcp_loopback.py` 验证完整协议链路。
 
 参考: https://developers.openai.com/codex/mcp
 
@@ -655,6 +653,7 @@ AI_Serial/
 ├── backend/
 │   ├── main.py             # FastAPI + WebSocket 服务
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP 代理)
+│   ├── local_runtime.py    # 桌面凭据与运行时发现
 │   ├── automations.py      # 健康规则、命令宏和计划运行时
 │   ├── serial_manager.py   # 多串口管理器
 │   ├── leases.py           # 单写者端口租约

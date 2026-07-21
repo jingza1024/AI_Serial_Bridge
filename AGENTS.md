@@ -14,7 +14,7 @@ cd frontend && npm ci
 python manager.py start                 # backend + Vite
 python -m pytest backend/tests          # backend tests
 python scripts/smoke_test_mcp.py        # MCP connectivity
-python scripts/test_hardware_automation.py --port COM17 --baudrate 115200
+python scripts/test_hardware_automation.py --port <PORT> --baudrate 115200
 cd frontend && npm test && npm run build && npm run test:e2e
 python desktop.py
 python -m PyInstaller ai-serial-bridge.spec
@@ -36,4 +36,4 @@ Use scoped Conventional Commits such as `feat:`, `fix:`, `refactor:`, and `docs:
 
 ## Security & Configuration
 
-Never commit tokens or machine-specific MCP paths. `/api/config` must not expose secrets. Browsers use an HttpOnly session derived from `AI_SERIAL_TOKEN`; MCP uses the same secret as a Bearer credential. Require TLS beyond loopback. Never print `AI_SERIAL_LOG_KEY`. Preserve batch receive limits: 32 MiB per file, 64 MiB per batch, and basename-only extraction. Stop the backend before offline log migration and pass keys only through environment variables.
+Never commit tokens or machine-specific MCP paths. Default desktop/MCP pairing stores the token in `credentials.json`; `runtime.json` must remain token-free and owner-cleaned. `/api/config` may expose service and instance identity, never secrets. Explicit remote URLs must not reuse saved local credentials. Require TLS beyond loopback. Never print `AI_SERIAL_LOG_KEY`. Preserve batch receive limits: 32 MiB per file, 64 MiB per batch, and basename-only extraction. Stop the backend before offline log migration and pass keys only through environment variables.

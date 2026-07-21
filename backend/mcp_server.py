@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import io
 import json
+import os
 import re
 import secrets
 import zipfile
@@ -19,13 +20,13 @@ from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
 
 import httpx
-import os
 
-BASE_URL = os.environ.get("AI_SERIAL_API_URL", "http://localhost:8000").rstrip("/")
-_AUTH_TOKEN = os.environ.get("AI_SERIAL_TOKEN", "").strip()
+import local_runtime
+
 _CLIENT_ID = os.environ.get("AI_SERIAL_CLIENT_ID", "").strip() or f"mcp-{secrets.token_urlsafe(12)}"
 _CLIENT_LABEL = os.environ.get("AI_SERIAL_CLIENT_LABEL", "MCP").strip()[:64] or "MCP"
 _LANG = os.environ.get("AI_SERIAL_LANG", "zh").lower()
+PREFLIGHT_TIMEOUT = 2.0
 MAX_BATCH_FILES = 64
 MAX_FILE_SIZE = 32 * 1024 * 1024
 MAX_BATCH_SIZE = 64 * 1024 * 1024
@@ -33,79 +34,159 @@ MAX_BATCH_SIZE = 64 * 1024 * 1024
 app = Server("ai-serial-bridge")
 
 # 复用单个 AsyncClient 以利用连接池，避免每次请求新建/销毁连接
-_client: httpx.AsyncClient | None = None
+_clients: dict[bool, httpx.AsyncClient] = {}
 _port_locks: dict[str, asyncio.Lock] = {}
 
 
-async def _get_client() -> httpx.AsyncClient:
-    global _client
-    if _client is None or _client.is_closed:
-        _client = httpx.AsyncClient(timeout=10.0)
-    return _client
+class BackendDiscoveryError(RuntimeError):
+    """Raised when no discovered target can be safely authenticated."""
+
+
+async def _get_client(*, trust_env: bool = True) -> httpx.AsyncClient:
+    client = _clients.get(trust_env)
+    if client is None or client.is_closed:
+        client = httpx.AsyncClient(timeout=10.0, trust_env=trust_env)
+        _clients[trust_env] = client
+    return client
 
 
 async def _close_client() -> None:
-    global _client
-    if _client is not None and not _client.is_closed:
-        await _client.aclose()
-    _client = None
+    for client in _clients.values():
+        if not client.is_closed:
+            await client.aclose()
+    _clients.clear()
 
 
-def _client_headers() -> dict:
+def _client_headers(token: str = "") -> dict:
     headers = {
         "X-AI-Serial-Client": _CLIENT_ID,
         "X-AI-Serial-Client-Label": _CLIENT_LABEL,
     }
-    if _AUTH_TOKEN:
-        headers["Authorization"] = f"Bearer {_AUTH_TOKEN}"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
-async def api_get(path: str, params: dict | None = None):
-    client = await _get_client()
-    response = await client.get(f"{BASE_URL}{path}", params=params, headers=_client_headers())
+def _endpoint_url(base_url: str, path: str) -> str:
+    return f"{base_url.rstrip('/')}/{path.lstrip('/')}"
+
+
+def _validate_preflight(
+    response,
+    target: local_runtime.ConnectionTarget,
+) -> bool:
     response.raise_for_status()
-    return response
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise ValueError("backend config is not an object")
+    if payload.get("service") != local_runtime.SERVICE_NAME:
+        raise ValueError("backend service identity mismatch")
+    auth_required = payload.get("auth_required")
+    instance_id = payload.get("instance_id", "")
+    if not isinstance(auth_required, bool) or not isinstance(instance_id, str):
+        raise ValueError("backend config has invalid fields")
+    if target.instance_id and instance_id != target.instance_id:
+        raise ValueError("backend instance identity mismatch")
+    return auth_required
+
+
+async def _api_request(
+    method: str,
+    path: str,
+    *,
+    params: dict | None = None,
+    json_data: dict | None = None,
+    content: bytes | None = None,
+    extra_headers: dict | None = None,
+    timeout=10.0,
+):
+    try:
+        targets = local_runtime.resolve_connection_targets()
+    except local_runtime.RuntimeConfigError as exc:
+        raise BackendDiscoveryError(str(exc)) from exc
+
+    last_error: Exception | None = None
+    for target in targets:
+        client = await _get_client(
+            trust_env=not local_runtime.is_loopback_url(target.api_url)
+        )
+        config_url = _endpoint_url(target.api_url, "/api/config")
+        try:
+            config_response = await client.request(
+                "GET",
+                config_url,
+                headers=_client_headers(),
+                timeout=PREFLIGHT_TIMEOUT,
+            )
+            auth_required = _validate_preflight(config_response, target)
+            if auth_required and not target.token:
+                raise ValueError("backend requires authentication but no token is available")
+        except Exception as exc:
+            last_error = exc
+            continue
+
+        headers = _client_headers(target.token if auth_required else "")
+        if extra_headers:
+            headers.update(extra_headers)
+        request_kwargs = {
+            "params": params,
+            "headers": headers,
+            "timeout": timeout,
+        }
+        if json_data is not None:
+            request_kwargs["json"] = json_data
+        if content is not None:
+            request_kwargs["content"] = content
+
+        response = await client.request(
+            method,
+            _endpoint_url(target.api_url, path),
+            **request_kwargs,
+        )
+        if response.status_code == 401:
+            try:
+                response.raise_for_status()
+            except httpx.HTTPStatusError as exc:
+                last_error = exc
+            continue
+        response.raise_for_status()
+        return response
+
+    raise BackendDiscoveryError(
+        "no compatible AI Serial Bridge backend is available"
+    ) from last_error
+
+
+async def api_get(path: str, params: dict | None = None):
+    return await _api_request("GET", path, params=params)
 
 
 async def api_post(path: str, json_data: dict = None, params: dict | None = None):
-    client = await _get_client()
-    response = await client.post(
-        f"{BASE_URL}{path}", params=params, json=json_data, headers=_client_headers()
+    return await _api_request(
+        "POST",
+        path,
+        params=params,
+        json_data=json_data,
     )
-    response.raise_for_status()
-    return response
 
 
 async def api_post_long(path: str, params: dict | None = None):
-    client = await _get_client()
-    response = await client.post(
-        f"{BASE_URL}{path}", params=params, headers=_client_headers(), timeout=None
-    )
-    response.raise_for_status()
-    return response
+    return await _api_request("POST", path, params=params, timeout=None)
 
 
 async def api_post_bytes(path: str, data: bytes, params: dict | None = None):
-    client = await _get_client()
-    response = await client.post(
-        f"{BASE_URL}{path}",
+    return await _api_request(
+        "POST",
+        path,
         params=params,
         content=data,
-        headers={**_client_headers(), "Content-Type": "application/octet-stream"},
+        extra_headers={"Content-Type": "application/octet-stream"},
         timeout=None,
     )
-    response.raise_for_status()
-    return response
 
 
 async def api_receive_bytes(path: str, params: dict | None = None):
-    client = await _get_client()
-    response = await client.post(
-        f"{BASE_URL}{path}", params=params, headers=_client_headers(), timeout=None
-    )
-    response.raise_for_status()
-    return response
+    return await _api_request("POST", path, params=params, timeout=None)
 
 
 async def _get_default_port() -> str:
@@ -833,8 +914,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else:
             return [TextContent(type="text", text=f"未知工具: {name}")]
 
+    except BackendDiscoveryError:
+        return [TextContent(type="text", text="❌ 未发现可用的 AI Serial Bridge 后端，请先启动桌面程序或 main.py")]
     except (httpx.ConnectError, httpx.TimeoutException):
-        return [TextContent(type="text", text=f"❌ 无法连接到后端服务 ({BASE_URL})，请先启动 main.py")]
+        return [TextContent(type="text", text="❌ 后端请求中断，请确认 AI Serial Bridge 仍在运行")]
     except httpx.HTTPStatusError as e:
         if e.response.status_code == 409:
             detail = e.response.json().get("detail", {})

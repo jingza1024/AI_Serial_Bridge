@@ -1,7 +1,3 @@
 [mcp_servers.ai-serial-bridge]
 command = "python"
 args = ["<YOUR_PROJECT_PATH>/backend/mcp_server.py"]
-
-[mcp_servers.ai-serial-bridge.env]
-AI_SERIAL_API_URL = "http://127.0.0.1:8000"
-AI_SERIAL_TOKEN = "<YOUR_AI_SERIAL_TOKEN>"
