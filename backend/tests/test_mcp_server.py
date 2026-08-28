@@ -47,6 +47,14 @@ class FakeClient:
         return self.handler(method, url, kwargs)
 
 
+def test_mcp_dependency_stays_on_v1_api_line():
+    requirements = (Path(__file__).parents[1] / "requirements-mcp.txt").read_text(
+        encoding="utf-8"
+    )
+
+    assert "mcp>=1.0.0,<2.0.0" in requirements
+
+
 def _use_fake_client(monkeypatch, handler):
     client = FakeClient(handler)
 
