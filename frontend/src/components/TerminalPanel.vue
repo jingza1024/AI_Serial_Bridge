@@ -6,6 +6,7 @@ import { useSerial, type SerialMessage, type SerialRawChunk, type TransferProtoc
 import { useLocale } from '../composables/useLocale'
 import { useTerminalSession } from '../composables/useTerminalSession'
 import { normalizeInteractiveInput, type SerialNewline } from '../utils/serialInput'
+import { copyTerminalSelection, pasteClipboardIntoTerminal, positionContextMenu } from '../utils/terminalClipboard'
 import '@xterm/xterm/css/xterm.css'
 
 const props = defineProps<{ port: string }>()
@@ -14,7 +15,9 @@ const serial = useSerial()
 const { t } = useLocale()
 
 const terminalRef = useTemplateRef<HTMLDivElement>('terminalRef')
+const panelRef = useTemplateRef<HTMLDivElement>('panelRef')
 const fileInputRef = useTemplateRef<HTMLInputElement>('fileInputRef')
+const commandInputRef = useTemplateRef<HTMLInputElement>('commandInputRef')
 const interactiveMode = shallowRef(true)
 const localEcho = shallowRef(false)
 const autoScroll = shallowRef(true)
@@ -26,6 +29,8 @@ const fileProtocol = shallowRef<TransferProtocol>('raw')
 const inputText = ref('')
 const newlineMode = ref('\r\n')
 const interactiveNewlineMode = ref<SerialNewline>('\n')
+const contextMenuPosition = shallowRef<{ left: number, top: number } | null>(null)
+const contextMenuSelection = shallowRef('')
 
 const settings = computed(() => serial.portSettings.value[props.port])
 const baudrate = computed(() => settings.value?.baudrate ?? 115200)
@@ -112,6 +117,57 @@ function handleKeydown(event: KeyboardEvent) {
     event.preventDefault()
     sendInput()
   }
+}
+
+function closeContextMenu() {
+  contextMenuPosition.value = null
+  contextMenuSelection.value = ''
+}
+
+function handleContextMenu(event: MouseEvent) {
+  event.preventDefault()
+  const panel = panelRef.value
+  if (!panel) return
+  contextMenuSelection.value = term?.getSelection() || ''
+  contextMenuPosition.value = positionContextMenu(
+    event,
+    panel.getBoundingClientRect(),
+    { width: 144, height: 76 },
+  )
+}
+
+async function copySelection() {
+  let copied = false
+  if (term) {
+    const clipboard = navigator.clipboard || null
+    copied = await copyTerminalSelection(
+      { getSelection: () => contextMenuSelection.value },
+      clipboard,
+    )
+  }
+  if (!copied) term?.write(`\r\n\x1b[90m[${t('terminal.system')}] ${t('terminal.copyUnavailable')}\x1b[0m\r\n`)
+  closeContextMenu()
+}
+
+async function pasteFromClipboard() {
+  let pasted = false
+  if (term) {
+    const clipboard = navigator.clipboard || null
+    pasted = await pasteClipboardIntoTerminal(term, clipboard, text => {
+      if (interactiveMode.value) {
+        term?.paste(text)
+        return
+      }
+      inputText.value += text.replace(/\r\n/g, '\n').replace(/\r/g, '\n')
+      commandInputRef.value?.focus()
+    })
+  }
+  if (!pasted) term?.write(`\r\n\x1b[90m[${t('terminal.system')}] ${t('terminal.pasteUnavailable')}\x1b[0m\r\n`)
+  closeContextMenu()
+}
+
+function handleWindowKeydown(event: KeyboardEvent) {
+  if (event.key === 'Escape') closeContextMenu()
 }
 
 async function onFilePicked(event: Event) {
@@ -253,12 +309,16 @@ onMounted(() => {
 
   serial.onMessage(props.port, appendMessage)
   serial.onRaw(props.port, appendRaw)
+  window.addEventListener('keydown', handleWindowKeydown)
+  window.addEventListener('mousedown', closeContextMenu)
   if (!serial.isConnected.value) void serial.connect()
   onUnmounted(() => {
     serial.offMessage(props.port, appendMessage)
     serial.offRaw(props.port, appendRaw)
     if (keyBufferTimer) clearTimeout(keyBufferTimer)
     if (progressResetTimer) clearTimeout(progressResetTimer)
+    window.removeEventListener('keydown', handleWindowKeydown)
+    window.removeEventListener('mousedown', closeContextMenu)
     cancelFileTransfer?.()
     term = null
   })
@@ -270,7 +330,7 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
 </script>
 
 <template>
-  <div class="terminal-panel">
+  <div ref="panelRef" class="terminal-panel">
     <TerminalToolbar
       :port="props.port"
       :baudrate="baudrate"
@@ -300,7 +360,32 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
       @update:file-protocol="fileProtocol = $event"
     />
 
-    <div ref="terminalRef" class="terminal-container"></div>
+    <div
+      ref="terminalRef"
+      class="terminal-container"
+      @contextmenu="handleContextMenu"
+    ></div>
+
+    <div
+      v-if="contextMenuPosition"
+      class="terminal-context-menu"
+      role="menu"
+      :style="{ left: `${contextMenuPosition.left}px`, top: `${contextMenuPosition.top}px` }"
+      @mousedown.stop
+    >
+      <button
+        class="context-menu-item"
+        type="button"
+        role="menuitem"
+        :disabled="!contextMenuSelection"
+        @click="copySelection"
+      >
+        {{ t('terminal.copy') }}
+      </button>
+      <button class="context-menu-item" type="button" role="menuitem" @click="pasteFromClipboard">
+        {{ t('terminal.paste') }}
+      </button>
+    </div>
 
     <div v-if="!canWrite" class="read-only-banner">
       {{ t('terminal.writeLeaseRequired') }}
@@ -314,6 +399,7 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
         <option :value="''">None</option>
       </select>
       <input
+        ref="commandInputRef"
         v-model="inputText"
         type="text"
         class="input"
@@ -353,6 +439,7 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
 
 <style scoped>
 .terminal-panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   width: 100%;
@@ -363,6 +450,41 @@ watch(() => serial.messages.value[props.port]?.length, (newLength, oldLength) =>
   flex: 1;
   overflow: hidden;
   background-color: #161b22;
+}
+
+.terminal-context-menu {
+  position: absolute;
+  z-index: 20;
+  display: flex;
+  width: 144px;
+  flex-direction: column;
+  padding: 4px 0;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  background: #21262d;
+  box-shadow: 0 8px 24px #0008;
+}
+
+.context-menu-item {
+  width: 100%;
+  min-height: 34px;
+  padding: 7px 12px;
+  border: 0;
+  background: transparent;
+  color: #c9d1d9;
+  text-align: left;
+  cursor: pointer;
+}
+
+.context-menu-item:hover:not(:disabled),
+.context-menu-item:focus-visible:not(:disabled) {
+  background: #30363d;
+  outline: none;
+}
+
+.context-menu-item:disabled {
+  color: #6e7681;
+  cursor: not-allowed;
 }
 
 .read-only-banner {
