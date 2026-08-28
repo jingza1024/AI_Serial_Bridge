@@ -350,7 +350,7 @@ class SerialManager:
         """
         buffer = bytearray()
         last_recv_time = 0.0
-        LINE_TIMEOUT = 0.05  # 50ms 无新数据则发送缓冲区内容
+        LINE_TIMEOUT = 0.01  # 10ms 无新数据则发送缓冲区内容，及时显示按键回显
         MAX_BUFFER = 64 * 1024
 
         while not self._stop_event.is_set():

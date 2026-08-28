@@ -49,6 +49,25 @@ def test_open_and_receive_device_data():
     assert mgr.is_open() is False
 
 
+def test_partial_device_output_flushes_before_key_repeat_interval():
+    mgr = SerialManager()
+    received = []
+    mgr.register_callback(received.append)
+    assert mgr.open("COM_KEY_REPEAT") is True
+
+    mgr._serial.feed(b"b")
+
+    assert _wait_until(
+        lambda: any(
+            m.source == MessageSource.DEVICE and m.content == "b"
+            for m in received
+        ),
+        timeout=0.04,
+        interval=0.005,
+    )
+    mgr.close()
+
+
 def test_close_returns_promptly_no_deadlock():
     mgr = SerialManager()
     mgr.open("COM_TO")
