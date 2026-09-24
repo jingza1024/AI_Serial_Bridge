@@ -43,6 +43,7 @@ python -m PyInstaller ai-serial-bridge.spec
 - **调试控制台**：`ai-serial-bridge.spec` 中 `EXE(console=False)` 隐藏控制台窗口；调试启动问题时改为 `console=True` 可查看后端日志。
 - **图标**：准备 `assets/app.ico` 后取消 spec 中 `icon=` 行的注释。
 - **体积优化**：spec 中已排除 `mcp`、`pytest`。如需进一步瘦身可启用 UPX（spec 默认 `upx=True`，需系统已安装 UPX）。
+- **MCP 版本**：MCP 代理当前依赖 `mcp>=1.0.0,<2.0.0`；桌面发行版不包含 MCP 代理，外部 MCP 客户端应在自己的虚拟环境中安装 `backend/requirements-mcp.txt`。
 
 ## 开发模式（不打包）
 
@@ -53,6 +54,8 @@ python desktop.py
 ```
 
 若 `frontend/dist` 不存在，开发模式会回退到 Vite 开发服务器（`http://localhost:5173`）；此时必须先在另一个终端执行 `cd frontend && npm run dev`，并确保后端端口 8000 可用。
+
+如果桌面窗口一闪而过，优先运行 `python desktop.py` 查看源码模式错误；对于已打包程序，临时将 spec 中的 `console=False` 改为 `console=True` 后重新打包，再从 PowerShell 启动可执行文件查看日志。确认问题后恢复 `console=False`。
 
 ## 访问鉴权
 

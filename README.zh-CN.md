@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![Vue.js](https://img.shields.io/badge/Vue-3-green.svg)](https://vuejs.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg)](https://fastapi.tiangolo.com)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple.svg)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-SDK%201.x-purple.svg)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 [English](README.md) | **中文**
@@ -93,7 +93,9 @@ AI Serial Bridge 是一个基于 **Model Context Protocol (MCP)** 的桥接服�
 - **串口参数档案**：按硬件 ID 记忆数据格式、流控、DTR 和 RTS
 - **HWID 自动重连**：命名档案可在 COM 号变化后按退避策略恢复连接
 - **协议接收**：Web UI 与 MCP 可接收 XMODEM/YMODEM 文件并支持取消
+- **YMODEM 批量接收**：批量接收为 ZIP，并生成带 SHA-256 的 `manifest.json`；MCP 写入前会校验文件
 - **日志会话**：持久记录包含会话 ID，并支持可选的按天保留策略
+- **加密日志**：可选使用 Fernet 加密新写入的轮转日志
 - **租约防护**：阻止多个客户端交错写入，并允许其他客户端安全只读观察
 - **设备自动化**：通过 Web UI 或 MCP 配置有界命令宏、正则健康规则和遵守租约的定时诊断
 - **离线密钥轮换**：支持明文日志迁移、Fernet 密钥轮换、dry-run、原子替换、备份和回滚
@@ -171,7 +173,7 @@ python manager.py restart
 | 配置 | 安装命令 | 额外步骤 |
 |------|----------|----------|
 | Web 后端 | `python -m pip install -r backend/requirements.txt` | 构建或启动 Vue 前端 |
-| MCP 客户端代理 | `python -m pip install -r backend/requirements-mcp.txt` | 仍需启动 Web 后端 |
+| MCP 客户端代理 | `python -m pip install -r backend/requirements-mcp.txt` | 使用 MCP SDK 1.x，仍需启动 Web 后端 |
 | 桌面 GUI | `python -m pip install -r backend/requirements-desktop.txt` | 在 `frontend/` 执行 `npm ci && npm run build` |
 | 开发 / 打包 | `python -m pip install -r backend/requirements-dev.txt` | 包含后端、MCP、桌面、pytest 和 PyInstaller |
 
@@ -204,6 +206,8 @@ python -m PyInstaller ai-serial-bridge.spec
 ```
 
 onedir 产物位于 `dist/AI Serial Bridge/`。桌面发行版不内置 MCP stdio 代理；请在源码目录安装 MCP 依赖，并让 AI 客户端运行 `backend/mcp_server.py`。
+
+如果打包后的桌面程序启动后立即关闭，可临时将 `ai-serial-bridge.spec` 中的 `console=False` 改为 `console=True`，重新打包后从 PowerShell 启动，以查看后端错误。正常发布 GUI 版本时请恢复为 `console=False`。
 
 ## 手动启动
 
@@ -269,6 +273,21 @@ python scripts/test_hardware_automation.py --port <PORT> --baudrate 115200
 > **前提条件**: 安装 `backend/requirements-mcp.txt`，并在 Agent 客户端中一次性注册 `backend/mcp_server.py`。随后启动桌面程序、`python backend/main.py` 或 `python manager.py start`。
 
 MCP 代理在每次请求前解析当前桌面地址和凭据；独立后端默认使用 `http://127.0.0.1:8000`。仅在显式独立或远程目标中设置 `AI_SERIAL_API_URL` 和 `AI_SERIAL_TOKEN`。回环请求会自动绕过环境代理；远程 URL 可使用代理，但绝不会收到本地保存的凭据。
+
+当前代理使用 MCP SDK 1.x API（`mcp>=1.0.0,<2.0.0`）。请在 MCP 客户端实际使用的同一个虚拟环境中安装 `backend/requirements-mcp.txt`。下面各配置中的 `python` 只是占位符：如果客户端不会继承已激活的虚拟环境，请改成解释器绝对路径，例如 Windows 的 `C:\\path\\to\\AI_Serial\\.venv\\Scripts\\python.exe`，或 Linux/macOS 的 `/path/to/AI_Serial/.venv/bin/python`。可直接参考 `mcp-config/` 下的配置模板。
+
+默认桌面配对不需要环境变量。如果使用显式 token 或远程后端，应使用 MCP 客户端提供的环境变量配置，不要把真实密钥提交到仓库：
+
+```json
+{
+  "env": {
+    "AI_SERIAL_TOKEN": "replace-with-a-secret",
+    "AI_SERIAL_API_URL": "https://serial.example.com"
+  }
+}
+```
+
+本地桌面配对通常不需要设置 `AI_SERIAL_API_URL`；远程目标必须显式配置，并应使用 TLS。
 
 以下配置中所有路径均为示例，请将 `<YOUR_PROJECT_PATH>` 替换为你的实际安装目录。
 
@@ -595,6 +614,7 @@ codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.
    - Tab 自动补全
    - 方向键浏览历史
    - Ctrl+C 中断当前程序
+   - 右键终端可复制当前选中文本或粘贴剪贴板内容
 4. **命令模式**：在底部输入框输入命令发送，可选择换行符模式（CR / LF / CRLF）
 5. 观察终端中设备的返回数据
 6. 发送文件前选择 **RAW**、**XMODEM**、**XMODEM-1K** 或 **YMODEM**，并先让设备进入对应接收模式
@@ -668,6 +688,8 @@ AI_Serial/
 │       ├── components/
 │       │   ├── automation/ # 自动化弹窗和面板
 │       │   ├── AuthDialog.vue
+│       │   ├── LogBrowserDialog.vue
+│       │   ├── LogSessionList.vue
 │       │   ├── PortDialog.vue
 │       │   ├── TerminalToolbar.vue
 │       │   └── TerminalPanel.vue

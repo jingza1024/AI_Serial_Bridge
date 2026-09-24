@@ -3,7 +3,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10+-blue.svg)](https://python.org)
 [![Vue.js](https://img.shields.io/badge/Vue-3-green.svg)](https://vuejs.org)
 [![FastAPI](https://img.shields.io/badge/FastAPI-009688.svg)](https://fastapi.tiangolo.com)
-[![MCP](https://img.shields.io/badge/MCP-1.0+-purple.svg)](https://modelcontextprotocol.io)
+[![MCP](https://img.shields.io/badge/MCP-SDK%201.x-purple.svg)](https://modelcontextprotocol.io)
 [![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 **English** | [中文](README.zh-CN.md)
@@ -173,7 +173,7 @@ Choose only the dependencies needed for the intended runtime:
 | Profile | Install command | Additional step |
 |---------|-----------------|-----------------|
 | Web backend | `python -m pip install -r backend/requirements.txt` | Build or run the Vue frontend |
-| MCP client proxy | `python -m pip install -r backend/requirements-mcp.txt` | The Web backend must also be running |
+| MCP client proxy | `python -m pip install -r backend/requirements-mcp.txt` | Uses MCP SDK 1.x; the Web backend must also be running |
 | Desktop GUI | `python -m pip install -r backend/requirements-desktop.txt` | Run `npm ci && npm run build` in `frontend/` |
 | Contributor / packaging | `python -m pip install -r backend/requirements-dev.txt` | Includes backend, MCP, desktop, pytest, and PyInstaller |
 
@@ -206,6 +206,8 @@ python -m PyInstaller ai-serial-bridge.spec
 ```
 
 The onedir application is written to `dist/AI Serial Bridge/`. The packaged desktop does not embed the MCP stdio proxy; configure AI clients to run `backend/mcp_server.py` from a source checkout with the MCP requirements installed.
+
+If a packaged desktop window closes immediately, temporarily change `console=False` to `console=True` in `ai-serial-bridge.spec`, rebuild, and launch the executable from PowerShell so the backend error remains visible. Restore `console=False` for normal GUI distribution.
 
 ## Manual Start
 
@@ -282,6 +284,21 @@ python scripts/test_hardware_automation.py --port <PORT> --baudrate 115200
 > **Prerequisite**: Install `backend/requirements-mcp.txt` and register `backend/mcp_server.py` with the Agent client once. Then start the desktop app, `python backend/main.py`, or `python manager.py start`.
 
 The MCP proxy resolves the active desktop URL and credential before every request; standalone mode defaults to `http://127.0.0.1:8000`. Use `AI_SERIAL_API_URL` and `AI_SERIAL_TOKEN` only for explicit standalone or remote targets. Loopback requests bypass environment proxies automatically, while a remote URL may use them and never receives the saved local credential.
+
+The current proxy uses the MCP SDK 1.x API (`mcp>=1.0.0,<2.0.0`). Install `backend/requirements-mcp.txt` inside the same virtual environment used by the MCP client. In the examples below, `python` is only a placeholder: replace it with the absolute path to that environment's interpreter when the client does not inherit your activated shell, such as `C:\\path\\to\\AI_Serial\\.venv\\Scripts\\python.exe` on Windows or `/path/to/AI_Serial/.venv/bin/python` on Linux/macOS. The templates are also available under `mcp-config/`.
+
+The default desktop pairing needs no environment variables. For an explicit token or remote backend, use the MCP client's environment configuration instead of committing secrets:
+
+```json
+{
+  "env": {
+    "AI_SERIAL_TOKEN": "replace-with-a-secret",
+    "AI_SERIAL_API_URL": "https://serial.example.com"
+  }
+}
+```
+
+`AI_SERIAL_API_URL` is optional for local desktop pairing. Do not commit a real token to configuration files.
 
 All paths below are examples. Replace `<YOUR_PROJECT_PATH>` with your actual installation directory.
 
@@ -608,6 +625,7 @@ Reference: https://zed.dev/docs/ai/mcp
    - Tab for auto-completion
    - Arrow keys for history
    - Ctrl+C to interrupt the current program
+   - Right-click the terminal to copy the current selection or paste clipboard text
 4. **Command Mode**: Type commands in the bottom input bar, with selectable newline mode (CR / LF / CRLF)
 5. Observe the device response data in the terminal
 6. Choose **RAW**, **XMODEM**, **XMODEM-1K**, or **YMODEM** before **Send File**; start the matching receiver on the device first
