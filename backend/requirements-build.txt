@@ -1,0 +1,5 @@
+# 打包与构建期依赖（不参与运行时）
+# 与 requirements-desktop.txt 分开，避免普通开发者被迫安装 PyInstaller。
+-r requirements-desktop.txt
+
+pyinstaller>=6.0.0,<7.0.0

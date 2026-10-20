@@ -36,8 +36,23 @@ BACKEND_DIR = PROJECT_DIR / "backend"
 FRONTEND_DIR = PROJECT_DIR / "frontend"
 PID_FILE = PROJECT_DIR / ".pids.json"
 
-BACKEND_PORT = 8000
-FRONTEND_PORT = 5173
+# 端口集中由 backend/port_config.py 提供，支持环境变量覆盖
+sys.path.insert(0, str(BACKEND_DIR))
+from port_config import (  # noqa: E402
+    PortConfigError,
+    api_base_url,
+    api_host,
+    api_port,
+    frontend_port,
+)
+
+try:
+    BACKEND_PORT = api_port()
+    BACKEND_HOST = api_host()
+    FRONTEND_PORT = frontend_port()
+except PortConfigError as exc:
+    print(f"[ERROR] 端口配置无效: {exc}")
+    raise SystemExit(1)
 
 
 def _save_pids(pids: dict):
@@ -315,7 +330,7 @@ def start():
     print("=" * 50)
     print("  AI Serial Bridge 所有服务已启动")
     print("=" * 50)
-    print(f"  后端 API:   http://localhost:{BACKEND_PORT}")
+    print(f"  后端 API:   {api_base_url()}")
     print(f"  前端界面:   http://localhost:{FRONTEND_PORT}")
     if IS_WINDOWS:
         print(f"  MCP 配置:   C:\\Users\\{os.getlogin()}\\.kimi\\mcp.json")
