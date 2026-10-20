@@ -222,6 +222,32 @@ def _wait_for_server(
     return False
 
 
+def _resolve_bundle_dir(base_dir: Path) -> Path | None:
+    """定位前端构建产物目录。
+
+    以传入的 base_dir 为准（源码模式即仓库根，打包模式即 sys._MEIPASS），
+    这样测试可以注入任意目录，而不依赖调用时解释器的真实布局。
+    """
+    candidates = [base_dir / 'frontend' / 'dist']
+    meipass = getattr(sys, '_MEIPASS', None)
+    if meipass:
+        candidates.insert(0, Path(meipass) / 'frontend' / 'dist')
+    if getattr(sys, 'frozen', False):
+        exe_dir = Path(sys.executable).resolve().parent
+        candidates.extend([
+            exe_dir / '_internal' / 'frontend' / 'dist',
+            exe_dir / 'frontend' / 'dist',
+        ])
+
+    for candidate in candidates:
+        try:
+            if (candidate / 'index.html').is_file():
+                return candidate
+        except OSError:
+            continue
+    return None
+
+
 def _report_startup_failure(detail: str, title: str) -> None:
     """把启动失败报告给用户，并保证进程能够正常退出。
 
@@ -258,7 +284,19 @@ def _report_startup_failure(detail: str, title: str) -> None:
 def _run_desktop(base_dir: Path, dist_dir: Path, local_runtime, instance_id):
     port = _find_free_port(8000)
     host = '127.0.0.1'
-    if not dist_dir.is_dir() and port != 8000:
+
+    # 打包/桌面模式下前端产物的缺失必须在导入 main 之前拦下。
+    # 否则 main 在导入期抛出 RuntimeError，PyInstaller 的窗口化模式会弹
+    # "Unhandled exception in script" 模态框，把进程挂住不退出。
+    backend_dir = base_dir / 'backend'
+    if str(backend_dir) not in sys.path:
+        sys.path.insert(0, str(backend_dir))
+    import frontend_assets
+
+    resolved_dist = _resolve_bundle_dir(base_dir)
+
+    # 无构建产物时必须回退到 Vite 开发服务器，而它的代理固定指向 8000
+    if resolved_dist is None and port != 8000:
         print("ERROR: 开发模式要求端口 8000 可用，因为 Vite 代理固定连接该端口")
         sys.exit(1)
 
@@ -272,18 +310,9 @@ def _run_desktop(base_dir: Path, dist_dir: Path, local_runtime, instance_id):
     os.environ['AI_SERIAL_HOST'] = host
     os.environ['AI_SERIAL_DESKTOP'] = '1'  # 标记：桌面模式
 
-    # 打包/桌面模式下前端产物的缺失必须在导入 main 之前拦下。
-    # 否则 main 在导入期抛出 RuntimeError，PyInstaller 的窗口化模式会弹
-    # "Unhandled exception in script" 模态框，把进程挂住不退出。
-    backend_dir = base_dir / 'backend'
-    if str(backend_dir) not in sys.path:
-        sys.path.insert(0, str(backend_dir))
-    import frontend_assets
-
-    resolved_dist = frontend_assets.resolve_dist_dir_from_runtime()
     if resolved_dist is None:
         _report_startup_failure(
-            frontend_assets.describe_missing_dist(),
+            frontend_assets.describe_missing_dist(base_dir=base_dir),
             '未找到前端构建产物',
         )
         sys.exit(1)

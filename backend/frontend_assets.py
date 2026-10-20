@@ -112,16 +112,32 @@ def resolve_dist_dir_from_runtime() -> Path | None:
     )
 
 
-def describe_missing_dist() -> str:
-    """资源缺失时给出可操作的诊断文本。"""
+def describe_missing_dist(base_dir: "Path | str | None" = None) -> str:
+    """资源缺失时给出可操作的诊断文本。
+
+    ``base_dir`` 显式传入时以它为准（桌面启动器即如此），否则回退到当前
+    解释器的运行时状态。
+    """
     import sys
 
-    checked = candidate_dist_dirs(
-        meipass=getattr(sys, "_MEIPASS", None),
-        module_file=globals().get("__file__"),
-        executable=getattr(sys, "executable", None),
-        frozen=bool(getattr(sys, "frozen", False)),
-    )
+    if base_dir is not None:
+        checked = [Path(base_dir) / "frontend" / "dist"]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            checked.insert(0, Path(meipass) / "frontend" / "dist")
+        if getattr(sys, "frozen", False):
+            exe_dir = Path(sys.executable).resolve().parent
+            checked.extend([
+                exe_dir / "_internal" / "frontend" / "dist",
+                exe_dir / "frontend" / "dist",
+            ])
+    else:
+        checked = candidate_dist_dirs(
+            meipass=getattr(sys, "_MEIPASS", None),
+            module_file=globals().get("__file__"),
+            executable=getattr(sys, "executable", None),
+            frozen=bool(getattr(sys, "frozen", False)),
+        )
     lines = [
         "桌面模式未找到前端构建产物 frontend/dist（缺少 index.html）。",
         "已检查以下位置：",

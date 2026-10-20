@@ -120,7 +120,11 @@ def _install_desktop_fakes(monkeypatch, on_start=None):
 
 def _prepare_desktop_run(monkeypatch, tmp_path, *, wait_result=True, on_start=None):
     base_dir = tmp_path / "application"
-    (base_dir / "frontend" / "dist").mkdir(parents=True)
+    # 真实的构建产物必然包含入口页；仅创建目录不足以代表可用产物，
+    # 因为启动器以 index.html 是否存在来判定资源是否就绪。
+    dist_dir = base_dir / "frontend" / "dist"
+    dist_dir.mkdir(parents=True)
+    (dist_dir / "index.html").write_text("<html></html>", encoding="utf-8")
     state_dir = tmp_path / "state"
     monkeypatch.setattr(desktop, "_get_base_dir", lambda: str(base_dir))
     monkeypatch.setattr(desktop, "_frontend_build_is_stale", lambda base: False)
