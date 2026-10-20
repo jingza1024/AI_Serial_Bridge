@@ -20,6 +20,22 @@ MIN_TEXT = "3.10"
 MAX_TEXT = "3.14"
 
 
+def _configure_stdout() -> None:
+    """让输出不受控制台代码页限制（Windows 默认可能是 cp1252/cp936）。"""
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+_configure_stdout()
+
+
 class UnsupportedPythonError(RuntimeError):
     """当前 Python 版本不在支持区间。"""
 

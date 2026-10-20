@@ -16,6 +16,27 @@ import sys
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT / "backend"))
 
+
+def _configure_stdout() -> None:
+    """让输出不受控制台代码页限制。
+
+    Windows 的默认 stdout 编码可能是 cp1252/cp936，直接 print 中文会抛
+    UnicodeEncodeError（CI 上即如此）。用 errors="replace" 兜底，
+    保证脚本在任何代码页下都不会因为日志文本而失败。
+    """
+    for stream_name in ("stdout", "stderr"):
+        stream = getattr(sys, stream_name, None)
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (OSError, ValueError):
+            pass
+
+
+_configure_stdout()
+
 from build_manifest import source_fingerprint, write_manifest  # noqa: E402
 
 
