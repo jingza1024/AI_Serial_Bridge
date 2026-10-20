@@ -12,6 +12,7 @@ Serial Port Manager
 读线程也不会因为 close 持锁而成为孤儿（旧版本的核心缺陷）。
 """
 
+import logging
 import serial
 import serial.tools.list_ports
 import threading
@@ -20,6 +21,10 @@ from typing import Callable, Optional, List, Dict
 from dataclasses import dataclass, field
 from enum import Enum
 from collections import deque
+
+from serial_errors import OpenFailure, build_failure
+
+logger = logging.getLogger("ai_serial_bridge.serial")
 
 
 class MessageSource(Enum):
@@ -106,6 +111,18 @@ def _list_serial_ports() -> List[Dict[str, str]]:
     return ports
 
 
+def _port_is_enumerated(port: str) -> bool | None:
+    """判断端口名是否出现在系统枚举中。
+
+    返回 ``None`` 表示枚举本身失败（无法判断），避免把工具异常误判成"设备不存在"。
+    """
+    try:
+        return any(item["device"] == port for item in _list_serial_ports())
+    except Exception:
+        logger.debug("枚举串口失败", exc_info=True)
+        return None
+
+
 class SerialManager:
     """线程安全的单串口管理器"""
 
@@ -125,6 +142,8 @@ class SerialManager:
         self._failed = False
         self.baudrate: Optional[int] = None
         self.settings = SerialSettings()
+        # 最近一次打开失败的诊断信息（serial_errors.OpenFailure），成功时清空
+        self.last_error = None
 
     @staticmethod
     def list_ports() -> List[Dict[str, str]]:
@@ -180,6 +199,7 @@ class SerialManager:
                     rts=rts,
                 )
                 self._failed = False
+                self.last_error = None
                 self._stop_event.clear()
                 self._read_thread = threading.Thread(target=self._read_loop, daemon=True)
                 self._read_thread.start()
@@ -193,6 +213,13 @@ class SerialManager:
             except Exception as e:
                 self._serial = None
                 self._failed = True
+                # 记录结构化失败信息，供上层（REST / MCP）透传给调用方。
+                self.last_error = build_failure(
+                    port,
+                    e,
+                    present_in_enumeration=_port_is_enumerated(port),
+                    available_ports=[p["device"] for p in self.list_ports()],
+                )
                 self._notify(_system_event(
                     SerialEventCode.PORT_OPEN_FAILED,
                     port=port,
@@ -504,7 +531,8 @@ class SerialManager:
             try:
                 cb(message)
             except Exception:
-                pass
+                # 单个订阅者出错不应中断其它订阅者，但必须留下痕迹
+                logger.warning("串口消息回调异常（已跳过该订阅者）", exc_info=True)
 
     def _notify_raw(self, data: bytes):
         chunk = SerialRawChunk(data=data, timestamp=time.time())
@@ -517,7 +545,7 @@ class SerialManager:
             try:
                 callback(chunk)
             except Exception:
-                pass
+                logger.warning("原始数据回调异常（已跳过该订阅者）", exc_info=True)
 
 
 # 全局单例 - 多串口管理器
@@ -530,6 +558,8 @@ class SerialPortManager:
         self._callbacks: List[Callable[[str, SerialMessage], None]] = []
         self._raw_callbacks: List[Callable[[str, SerialRawChunk], None]] = []
         self._callbacks_lock = threading.Lock()
+        # 最近一次打开失败的诊断信息
+        self.last_error: OpenFailure | None = None
 
     def list_ports(self) -> List[Dict[str, str]]:
         return _list_serial_ports()
@@ -579,7 +609,10 @@ class SerialPortManager:
                     try:
                         cb(port_name, msg)
                     except Exception:
-                        pass
+                        logger.warning(
+                            "端口 %s 的订阅者回调异常（已跳过该订阅者）",
+                            port_name, exc_info=True,
+                        )
             return callback
         sm.register_callback(make_callback(port))
 
@@ -590,14 +623,24 @@ class SerialPortManager:
                 try:
                     callback(port, chunk)
                 except Exception:
-                    pass
+                    logger.warning(
+                        "端口 %s 的原始数据订阅者回调异常（已跳过该订阅者）",
+                        port, exc_info=True,
+                    )
         sm.register_raw_callback(raw_callback)
 
         ok = sm.open(port, baudrate, **settings)
         if ok:
             with self._lock:
                 self._ports[port] = sm
+        else:
+            # 失败诊断保存在该实例上，供上层读取后透传给调用方
+            self.last_error = sm.last_error
         return ok
+
+    def get_last_error(self) -> OpenFailure | None:
+        """返回最近一次打开失败的诊断信息；无失败时为 ``None``。"""
+        return self.last_error
 
     def close(self, port: str) -> bool:
         """关闭指定串口"""

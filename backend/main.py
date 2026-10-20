@@ -11,8 +11,10 @@ import base64
 import hmac
 import io
 import json
+import logging
 import os
 import secrets
+import sys
 import threading
 import time
 import zipfile
@@ -40,6 +42,7 @@ from automations import (
 from leases import LeaseResult, PortLease, port_leases
 from local_runtime import SERVICE_NAME
 from log_store import serial_logs
+from frontend_assets import describe_missing_dist, resolve_dist_dir_from_runtime
 from transfers import (
     DEFAULT_MAX_BATCH_FILES,
     DEFAULT_MAX_BATCH_SIZE,
@@ -53,6 +56,28 @@ from serial_manager import (
     SerialMessage,
     SerialRawChunk,
 )
+
+logger = logging.getLogger("ai_serial_bridge")
+
+
+def _configure_default_logging() -> None:
+    """确保项目 logger 在未显式配置时也不会静默丢失输出。
+
+    桌面模式由 desktop.py 配置轮转文件日志；独立运行（python main.py）
+    时这里补一个 stderr handler，避免 logger.warning/error 无处可去。
+    """
+    if logger.handlers or logging.getLogger().handlers:
+        return
+    handler = logging.StreamHandler()
+    handler.setFormatter(logging.Formatter(
+        "%(asctime)s %(levelname)-7s %(name)s: %(message)s"
+    ))
+    logger.addHandler(handler)
+    logger.setLevel(logging.INFO)
+    logger.propagate = False
+
+
+_configure_default_logging()
 
 
 # --- 可选鉴权 token（opt-in）---
@@ -722,6 +747,7 @@ async def open_port(request: Request, req: OpenPortRequest):
         return _lease_conflict(req.port, lease)
     settings = _settings_dict(req)
     ok = await asyncio.to_thread(serial_manager.open, req.port, **settings)
+    failure = None if ok else serial_manager.get_last_error()
     if ok:
         await broadcast_status(req.port)
         await broadcast_open_ports()
@@ -734,6 +760,12 @@ async def open_port(request: Request, req: OpenPortRequest):
         "baudrate": req.baudrate,
         "settings": settings,
         "lease": _lease_dict(req.port),
+        # 失败时透传底层原因与处置建议，便于 UI 与 MCP 直接展示
+        "error": None if failure is None else {
+            **failure.to_dict(),
+            "hint": failure.hint,
+            "message": failure.to_message(),
+        },
     }
 
 
@@ -1469,17 +1501,26 @@ async def websocket_endpoint(websocket: WebSocket):
 
 
 # --- 桌面模式：静态文件服务 ---
-_base_dir = Path(__file__).parent.parent  # 项目根目录
-_dist_dir = _base_dir / 'frontend' / 'dist'
+# 资源定位集中在 frontend_assets 模块，便于对三种布局做单元测试。
+_dist_dir = resolve_dist_dir_from_runtime()
 
-if _desktop_mode and _dist_dir.is_dir():
+if _desktop_mode and _dist_dir is not None:
     @app.get("/", include_in_schema=False)
     async def serve_index():
         """提供前端入口页面"""
-        return FileResponse(str(_dist_dir / 'index.html'))
+        # 不缓存入口页，避免升级后浏览器仍加载旧资源清单
+        return FileResponse(
+            str(_dist_dir / 'index.html'),
+            headers={"Cache-Control": "no-cache"},
+        )
 
-    # 挂载静态资源目录（JS、CSS、图片等）
+    # 挂载静态资源目录（JS、CSS、图片等）；必须放在所有 API 路由之后，
+    # 否则根路径挂载会遮蔽 /api/*。
     app.mount("/", StaticFiles(directory=str(_dist_dir), html=True), name="frontend")
+elif _desktop_mode:
+    # 桌面模式下前端资源缺失是部署错误：静默降级只会让用户看到白屏，
+    # 因此直接 fail-fast，把可操作的诊断信息写进启动日志。
+    raise RuntimeError(describe_missing_dist())
 
 
 if __name__ == "__main__":

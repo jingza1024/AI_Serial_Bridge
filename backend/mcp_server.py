@@ -556,11 +556,28 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
                 "rts": arguments.get("rts"),
             }
             r = await api_post("/api/open", settings)
-            ok = r.json().get("success", False)
+            payload = r.json()
+            ok = payload.get("success", False)
             if ok:
                 return [TextContent(type="text", text=f"✅ 串口已打开: {port} @ {settings['baudrate']}bps")]
+            # 透传后端给出的失败分类、底层原因与处置建议
+            failure = payload.get("error") or {}
+            message = failure.get("message")
+            if not message:
+                detail = failure.get("detail") or ""
+                hint = failure.get("hint") or ""
+                available = failure.get("available_ports") or []
+                parts = [f"❌ 打开串口失败: {port}"]
+                if detail:
+                    parts.append(f"[{failure.get('exception') or 'Error'}] {detail}")
+                if hint:
+                    parts.append(hint)
+                if available:
+                    parts.append("可用串口: " + ", ".join(available))
+                message = " ".join(parts)
             else:
-                return [TextContent(type="text", text=f"❌ 打开串口失败: {port}")]
+                message = f"❌ {message}"
+            return [TextContent(type="text", text=message)]
 
         elif name == "serial_close":
             port = _resolve_port(arguments)
