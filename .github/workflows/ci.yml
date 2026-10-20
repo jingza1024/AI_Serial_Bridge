@@ -11,10 +11,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: '3.13'
           cache: pip
-      - run: pip install -r backend/requirements.txt -r backend/requirements-mcp.txt pytest
-      - run: python -m pytest backend/tests -p no:cacheprovider -q
+      - name: Check supported interpreter range
+        run: python scripts/check_python_version.py
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-dev.txt
+      - name: Run backend tests
+        run: python -m pytest backend/tests -p no:cacheprovider -q
 
   frontend:
     runs-on: ubuntu-latest
@@ -31,5 +37,105 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      - name: Stamp build fingerprint
+        run: python ../scripts/stamp_frontend_build.py
+      - name: Verify fingerprint matches sources
+        run: python ../scripts/stamp_frontend_build.py --check-only
       - run: npx playwright install --with-deps chromium
       - run: npm run test:e2e
+
+  # 打包冒烟：直接验证"打出来的 exe 能提供前端页面"。
+  # 历史回归（打包后 / 返回 404、pythonw 下 stdout 为 None 导致静默退出）
+  # 都无法被纯源码测试覆盖，只能靠真实打包 + 启动来拦截。
+  desktop-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements-build.txt
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Stamp build fingerprint
+        run: python scripts/stamp_frontend_build.py
+
+      - name: Package desktop app
+        run: python -m PyInstaller ai-serial-bridge.spec --noconfirm
+
+      - name: Verify frozen asset layout
+        shell: pwsh
+        run: |
+          $exe = "dist\AI Serial Bridge\AI Serial Bridge.exe"
+          if (-not (Test-Path $exe)) { throw "缺失可执行文件: $exe" }
+          $index = "dist\AI Serial Bridge\_internal\frontend\dist\index.html"
+          if (-not (Test-Path $index)) { throw "前端产物未被打包到 _internal: $index" }
+          Write-Host "打包产物存在: $exe"
+
+      - name: Smoke test packaged app
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = "dist\AI Serial Bridge\AI Serial Bridge.exe"
+          $stateDir = Join-Path $env:RUNNER_TEMP "asb-state"
+          $env:AI_SERIAL_STATE_DIR = $stateDir
+          New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
+
+          $proc = Start-Process -FilePath $exe -PassThru
+          Write-Host "已启动 PID $($proc.Id)"
+
+          $runtime = Join-Path $stateDir "runtime.json"
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Get-Date) -lt $deadline -and -not (Test-Path $runtime)) {
+            Start-Sleep -Milliseconds 500
+          }
+          if (-not (Test-Path $runtime)) { throw "超时：未生成 runtime.json（后端未就绪）" }
+
+          $manifest = Get-Content $runtime -Raw | ConvertFrom-Json
+          $base = $manifest.api_url
+          Write-Host "后端地址: $base"
+
+          # 关键断言：根路径必须返回前端页面，而不是 {"detail":"Not Found"}
+          $index = Invoke-WebRequest "$base/" -UseBasicParsing -TimeoutSec 20
+          if ($index.StatusCode -ne 200) { throw "GET / 返回 $($index.StatusCode)" }
+          if ($index.Content -notmatch '<title>AI Serial Bridge</title>') {
+            throw "GET / 未返回前端页面，实际内容: $($index.Content.Substring(0, [Math]::Min(200, $index.Content.Length)))"
+          }
+
+          # 静态资源可访问
+          $asset = [regex]::Match($index.Content, 'src="(\./assets/[^"]+\.js)"').Groups[1].Value
+          if ($asset) {
+            $assetUrl = "$base/" + ($asset -replace '^\./', '')
+            $assetResponse = Invoke-WebRequest $assetUrl -UseBasicParsing -TimeoutSec 20
+            if ($assetResponse.StatusCode -ne 200) { throw "静态资源 $asset 返回 $($assetResponse.StatusCode)" }
+            Write-Host "静态资源可访问: $asset ($($assetResponse.RawContentLength) bytes)"
+          }
+
+          # 崩溃日志不应出现（启动失败会被 desktop_logging 写入 crash.log）
+          $crash = Join-Path $stateDir "logs\crash.log"
+          if (Test-Path $crash) {
+            Write-Host "---- crash.log ----"
+            Get-Content $crash
+            throw "存在 crash.log，说明启动期发生未捕获异常"
+          }
+
+          Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+          Write-Host "打包冒烟测试通过"
