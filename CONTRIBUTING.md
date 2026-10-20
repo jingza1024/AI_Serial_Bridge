@@ -31,6 +31,7 @@ Thank you for your interest in contributing to AI Serial Bridge! This document p
 - **Python**: Follow PEP 8 style guide
 - **TypeScript/Vue**: Use the existing project conventions
 - **No emoji in Python print statements** (to avoid encoding issues on Windows)
+- **Output encoding**: scripts that print non-ASCII must not assume a UTF-8 console. Windows defaults to cp1252/cp936, so call `sys.stdout.reconfigure(encoding="utf-8", errors="replace")` (see `scripts/check_python_version.py`). `.bat` files must stay pure ASCII — cmd.exe parses them in the OEM code page — and `.ps1` files are saved with a UTF-8 BOM.
 - Keep changes minimal and focused
 
 ## Testing Checklist
@@ -38,10 +39,15 @@ Thank you for your interest in contributing to AI Serial Bridge! This document p
 Before submitting a PR, please verify:
 
 ```bash
+python scripts/check_python_version.py
 python -m pytest backend/tests -p no:cacheprovider -q
 cd frontend
 npm test
 npm run build
+cd ..
+python scripts/stamp_frontend_build.py
+python scripts/stamp_frontend_build.py --check-only
+cd frontend
 npm run test:e2e
 cd ..
 
@@ -64,6 +70,10 @@ python scripts/smoke_test_mcp.py
 - [ ] Log migration changes cover dry-run, wrong-key rejection, backups, and rollback
 - [ ] Desktop/MCP pairing changes cover credential reuse, manifest ownership, and desktop port changes without an MCP restart
 - [ ] Explicit remote URLs never receive saved local credentials, and `/api/config` never exposes a token
+- [ ] Backend tests also pass with `frontend/dist` absent (CI has no build bundle; a local build can mask failures)
+- [ ] Packaging changes run `pwsh -File scripts/smoke_packaged_desktop.ps1` against the real bundle
+- [ ] New backend modules imported dynamically by `desktop.py` are added to `ai-serial-bridge.spec` `hiddenimports`
+- [ ] Serial open failures still report the classified cause (`serial_errors.OpenFailure`) rather than a generic message
 
 ## Commit Messages
 

@@ -121,7 +121,7 @@ The MCP Server does not own serial hardware directly. Instead, it proxies to `ma
 
 ## Quick Start (Recommended)
 
-AI Serial Bridge is currently installed from source; it is not published as a PyPI package. Requirements are Python 3.10+, Node.js 20+, and npm.
+AI Serial Bridge is currently installed from source; it is not published as a PyPI package. Requirements are Python 3.10 - 3.14 (3.13 recommended; verify with `python scripts/check_python_version.py`), Node.js 20+, and npm.
 
 ```bash
 git clone https://github.com/jingza1024/AI_Serial_Bridge.git
@@ -175,7 +175,10 @@ Choose only the dependencies needed for the intended runtime:
 | Web backend | `python -m pip install -r backend/requirements.txt` | Build or run the Vue frontend |
 | MCP client proxy | `python -m pip install -r backend/requirements-mcp.txt` | Uses MCP SDK 1.x; the Web backend must also be running |
 | Desktop GUI | `python -m pip install -r backend/requirements-desktop.txt` | Run `npm ci && npm run build` in `frontend/` |
-| Contributor / packaging | `python -m pip install -r backend/requirements-dev.txt` | Includes backend, MCP, desktop, pytest, and PyInstaller |
+| Development (with tests) | `python -m pip install -r backend/requirements-dev.txt` | Backend + MCP + desktop runtime + pytest |
+| Packaging the desktop build | `python -m pip install -r backend/requirements-build.txt` | Adds PyInstaller; see [BUILD.md](BUILD.md) |
+
+For a reproducible dependency set, use `backend/requirements.lock` and `backend/requirements-mcp.lock` (generated with `uv pip compile`). The supported interpreter range is Python **3.10 - 3.14**; verify with `python scripts/check_python_version.py`. Outside that range some dependencies lack prebuilt wheels and fall back to a local compile.
 
 ### Desktop GUI
 
@@ -192,7 +195,20 @@ python desktop.py
 
 On first launch, desktop mode creates a user-scoped credential at `~/.ai-serial-bridge/credentials.json` and reuses it. It publishes the active loopback URL in `runtime.json` without the token, so a registered MCP proxy discovers desktop restarts and port changes automatically. An explicit `AI_SERIAL_TOKEN` overrides this pairing and must also be supplied to the MCP process.
 
-In source checkout mode, `desktop.py` refuses to serve an outdated `frontend/dist` bundle when the Vue source or build configuration is newer; rebuild with `cd frontend && npm run build`. Interactive terminals default to LF for Linux consoles and expose a per-terminal CRLF/CR selector for devices with different Enter semantics.
+Bundled launchers pin the project `.venv` interpreter and pre-check dependencies and the frontend bundle:
+
+```powershell
+.\start_desktop.ps1            # no console window
+.\start_desktop.ps1 -Console   # keep the console to read backend logs
+```
+
+Or double-click `start_desktop.bat`.
+
+> **About the interpreter**: if the `python` on `PATH` points at a different installation without this project's dependencies (common when several Pythons are installed), `python desktop.py` raises `ModuleNotFoundError`. `desktop.py` detects the missing packages and re-executes itself once through the project `.venv`, so the plain command still works; using `.venv\Scripts\python.exe desktop.py` or the launchers above avoids the extra process hop. The supported range is Python 3.10–3.14 — verify with `python scripts/check_python_version.py`.
+
+In source checkout mode, `desktop.py` refuses to serve an outdated `frontend/dist` bundle. The check compares a content fingerprint recorded by `python scripts/stamp_frontend_build.py` against the current sources, falling back to mtime when no fingerprint exists; rebuild with `cd frontend && npm run build`. Interactive terminals default to LF for Linux consoles and expose a per-terminal CRLF/CR selector for devices with different Enter semantics.
+
+Startup and runtime logs go to `~/.ai-serial-bridge/logs/desktop.log`, with `crash.log` created only when an unhandled exception actually occurs. If the window closes immediately, read those files first — a `console=False` build prints nothing to a console.
 
 ### Build the Desktop Distribution
 
@@ -681,18 +697,31 @@ Once MCP is configured, the AI automatically gains the following tools:
 ```
 AI_Serial/
 ├── manager.py              # Service manager (start/stop/restart/status)
+├── desktop.py              # Desktop shell (pywebview + in-process backend)
+├── start_desktop.bat       # Desktop launcher (cmd, pins .venv)
+├── start_desktop.ps1       # Desktop launcher (PowerShell, supports -Console)
+├── ai-serial-bridge.spec   # PyInstaller packaging configuration
 ├── backend/
 │   ├── main.py             # FastAPI + WebSocket service
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP proxy)
 │   ├── local_runtime.py    # Desktop credentials and runtime discovery
 │   ├── automations.py      # Health rules, macros, and schedule runtime
 │   ├── serial_manager.py   # Multi-port serial manager
+│   ├── serial_errors.py    # Open-failure classification and hints
 │   ├── leases.py           # Per-port single-writer leases
 │   ├── log_store.py        # Rotating persistent JSONL logs
 │   ├── transfers.py        # XMODEM/YMODEM state machines
+│   ├── frontend_assets.py  # Bundle resolution (source/onefile/onedir)
+│   ├── build_manifest.py   # Build fingerprint instead of mtime checks
+│   ├── desktop_logging.py  # Desktop logs and crash trail
+│   ├── port_config.py      # Single source for ports and bind address
 │   ├── requirements.txt    # Core backend runtime
 │   ├── requirements-mcp.txt
-│   └── requirements-desktop.txt
+│   ├── requirements-desktop.txt
+│   ├── requirements-dev.txt
+│   ├── requirements-build.txt
+│   ├── requirements.lock   # Pinned versions (uv pip compile)
+│   └── requirements-mcp.lock
 ├── frontend/
 │   └── src/
 │       ├── App.vue
@@ -727,10 +756,15 @@ AI_Serial/
 │   └── zed_settings.json
 ├── scripts/
 │   ├── rotate_log_key.py           # Offline encrypted-log migration
+│   ├── smoke_test_mcp.py           # MCP connectivity check
+│   ├── smoke_packaged_desktop.ps1  # Packaged-build startup smoke test
+│   ├── stamp_frontend_build.py     # Write/verify the build fingerprint
+│   ├── check_python_version.py     # Validate the interpreter range
 │   └── test_hardware_automation.py # Authenticated read-only MCP probe
 ├── assets/
 │   └── screenshots/        # Project screenshots for README
 ├── .github/
+│   ├── workflows/ci.yml    # Backend tests + frontend build + packaging smoke
 │   ├── ISSUE_TEMPLATE/
 │   │   ├── bug_report.md
 │   │   └── feature_request.md
@@ -738,6 +772,7 @@ AI_Serial/
 ├── SECURITY.md
 ├── ROADMAP.md
 ├── CONTRIBUTING.md
+├── BUILD.md
 ├── LICENSE
 ├── README.md
 └── README.zh-CN.md

@@ -121,7 +121,7 @@ MCP Server 不直接持有串口硬件，而是通过 HTTP 代理到 `main.py`�
 
 ## 快速开始（推荐）
 
-AI Serial Bridge 当前通过源码安装，不是 PyPI 软件包。运行环境需要 Python 3.10+、Node.js 20+ 和 npm。
+AI Serial Bridge 当前通过源码安装，不是 PyPI 软件包。运行环境需要 Python 3.10 - 3.14（推荐 3.13；可用 `python scripts/check_python_version.py` 校验）、Node.js 20+ 和 npm。
 
 ```bash
 git clone https://github.com/jingza1024/AI_Serial_Bridge.git
@@ -175,7 +175,10 @@ python manager.py restart
 | Web 后端 | `python -m pip install -r backend/requirements.txt` | 构建或启动 Vue 前端 |
 | MCP 客户端代理 | `python -m pip install -r backend/requirements-mcp.txt` | 使用 MCP SDK 1.x，仍需启动 Web 后端 |
 | 桌面 GUI | `python -m pip install -r backend/requirements-desktop.txt` | 在 `frontend/` 执行 `npm ci && npm run build` |
-| 开发 / 打包 | `python -m pip install -r backend/requirements-dev.txt` | 包含后端、MCP、桌面、pytest 和 PyInstaller |
+| 开发（含测试） | `python -m pip install -r backend/requirements-dev.txt` | 后端 + MCP + 桌面运行时 + pytest |
+| 打包桌面发行版 | `python -m pip install -r backend/requirements-build.txt` | 含 PyInstaller，详见 [BUILD.md](BUILD.md) |
+
+需要可复现的依赖版本时，使用 `backend/requirements.lock` 与 `backend/requirements-mcp.lock`（由 `uv pip compile` 生成）。运行环境要求 Python **3.10 - 3.14**；可用 `python scripts/check_python_version.py` 校验，超出该区间时部分依赖因缺少预编译 wheel 需要本机编译。
 
 ### 桌面 GUI
 
@@ -681,18 +684,31 @@ codex mcp add ai-serial-bridge -- python <YOUR_PROJECT_PATH>/backend/mcp_server.
 ```
 AI_Serial/
 ├── manager.py              # 服务管理器 (start/stop/restart/status)
+├── desktop.py              # 桌面壳（pywebview + 内置后端）
+├── start_desktop.bat       # 桌面启动器（cmd，固定使用 .venv）
+├── start_desktop.ps1       # 桌面启动器（PowerShell，支持 -Console）
+├── ai-serial-bridge.spec   # PyInstaller 打包配置
 ├── backend/
 │   ├── main.py             # FastAPI + WebSocket 服务
 │   ├── mcp_server.py       # MCP Server (stdio -> HTTP 代理)
 │   ├── local_runtime.py    # 桌面凭据与运行时发现
 │   ├── automations.py      # 健康规则、命令宏和计划运行时
 │   ├── serial_manager.py   # 多串口管理器
+│   ├── serial_errors.py    # 打开失败分类与诊断建议
 │   ├── leases.py           # 单写者端口租约
 │   ├── log_store.py        # 轮转持久 JSONL 日志
 │   ├── transfers.py        # XMODEM/YMODEM 状态机
+│   ├── frontend_assets.py  # 前端产物定位（源码/onefile/onedir）
+│   ├── build_manifest.py   # 前端构建指纹（替代 mtime 判定）
+│   ├── desktop_logging.py  # 桌面日志与崩溃落盘
+│   ├── port_config.py      # 端口与监听地址单一配置源
 │   ├── requirements.txt    # 后端核心运行依赖
 │   ├── requirements-mcp.txt
-│   └── requirements-desktop.txt
+│   ├── requirements-desktop.txt
+│   ├── requirements-dev.txt
+│   ├── requirements-build.txt
+│   ├── requirements.lock   # 锁定版本（uv pip compile）
+│   └── requirements-mcp.lock
 ├── frontend/
 │   └── src/
 │       ├── App.vue
@@ -727,10 +743,15 @@ AI_Serial/
 │   └── zed_settings.json
 ├── scripts/
 │   ├── rotate_log_key.py           # 离线加密日志迁移
+│   ├── smoke_test_mcp.py           # MCP 连通性检查
+│   ├── smoke_packaged_desktop.ps1  # 打包产物启动冒烟
+│   ├── stamp_frontend_build.py     # 写入/校验前端构建指纹
+│   ├── check_python_version.py     # 校验解释器是否在支持区间
 │   └── test_hardware_automation.py # 认证只读 MCP 实机检查
 ├── assets/
 │   └── screenshots/        # 项目截图
 ├── .github/
+│   ├── workflows/ci.yml    # 后端测试 + 前端构建 + 桌面打包冒烟
 │   ├── ISSUE_TEMPLATE/
 │   │   ├── bug_report.md
 │   │   └── feature_request.md
@@ -738,6 +759,7 @@ AI_Serial/
 ├── SECURITY.md
 ├── ROADMAP.md
 ├── CONTRIBUTING.md
+├── BUILD.md
 ├── LICENSE
 ├── README.md
 └── README.zh-CN.md

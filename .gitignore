@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 *.class
@@ -12,6 +12,9 @@ node_modules/
 dist/
 dist-ssr/
 *.local
+
+# PyInstaller 中间产物（打包输出 dist/ 已在上面忽略）
+build/
 
 # 运行时文件
 .pids.json
