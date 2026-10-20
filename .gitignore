@@ -29,3 +29,6 @@ build/
 .test-tmp/
 frontend/test-results/
 frontend/playwright-report/
+
+# 本地 Agent 指令（按机器/工具维护，不入库）
+AGENTS.md
