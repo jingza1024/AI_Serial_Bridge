@@ -190,6 +190,17 @@ cd ..
 python desktop.py
 ```
 
+也可以直接使用随附启动器，它会固定使用 `.venv` 中的解释器并预先校验依赖与前端产物：
+
+```powershell
+.\start_desktop.ps1            # 无控制台窗口
+.\start_desktop.ps1 -Console   # 保留控制台查看后端日志
+```
+
+或双击 `start_desktop.bat`。
+
+> **关于解释器**：若 PATH 上的 `python` 指向未安装本项目依赖的其他 Python（常见于同时安装了多套 Python 的机器），直接用 `python desktop.py` 会抛出 `ModuleNotFoundError`。`desktop.py` 会检测到依赖缺失并自动切换到项目 `.venv` 重新启动，因此该命令仍可正常使用；但显式使用 `.venv\Scripts\python.exe desktop.py` 或上述启动器可避免多一次进程跳转。
+
 首次启动时，桌面模式会在 `~/.ai-serial-bridge/credentials.json` 创建用户级凭据并持续复用。活动回环地址写入不含 token 的 `runtime.json`，已注册的 MCP 代理可自动发现桌面重启和端口变化。显式 `AI_SERIAL_TOKEN` 会覆盖默认配对，此时也必须传给 MCP 进程。
 
 源码模式下，如果 Vue 源码或构建配置比 `frontend/dist` 更新，`desktop.py` 会拒绝加载旧资源并提示执行 `cd frontend && npm run build`。交互终端默认向 Linux 控制台发送 LF，并在每个终端提供 CRLF/CR 换行选项，以兼容不同串口设备的 Enter 语义。
